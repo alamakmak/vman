@@ -186,6 +186,56 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             content={"detail": "internal server error"},
         )
 
+    # ------------------------------------------------------------------ #
+    # Frontend SPA static file serving (production)
+    # ------------------------------------------------------------------ #
+    # When the Vite build output exists, serve it so the dashboard is
+    # accessible at the root domain. In development the Vite dev server
+    # handles this via proxy, so this block is a no-op.
+    from pathlib import Path
+
+    # Resolve frontend/dist relative to the backend package root
+    _backend_root = Path(__file__).resolve().parent.parent  # backend/
+    _frontend_dist = _backend_root.parent / "frontend" / "dist"
+
+    if _frontend_dist.is_dir():
+        from starlette.staticfiles import StaticFiles
+        from fastapi.responses import FileResponse
+
+        _index_html = _frontend_dist / "index.html"
+        _assets_dir = _frontend_dist / "assets"
+
+        # Mount hashed asset bundles (JS/CSS) at /assets
+        if _assets_dir.is_dir():
+            app.mount(
+                "/assets",
+                StaticFiles(directory=str(_assets_dir)),
+                name="frontend-assets",
+            )
+
+        # Serve other static files in dist root (favicon, manifest, etc.)
+        @app.get("/vite.svg", include_in_schema=False)
+        @app.get("/favicon.ico", include_in_schema=False)
+        async def _static_root_files(request: Request) -> Response:
+            file_name = request.url.path.lstrip("/")
+            file_path = _frontend_dist / file_name
+            if file_path.is_file():
+                return FileResponse(str(file_path))
+            return FileResponse(str(_index_html))
+
+        # Catch-all: serve index.html for any non-API route so React
+        # Router client-side routing works (e.g. /hosts, /agents, /login)
+        @app.get("/{full_path:path}", include_in_schema=False)
+        async def _spa_fallback(request: Request, full_path: str) -> Response:
+            # Never intercept API routes
+            if full_path.startswith("api/") or full_path.startswith("api"):
+                raise HTTPException(status_code=404, detail="Not Found")
+            # Try to serve the exact file if it exists (e.g. robots.txt)
+            requested_file = _frontend_dist / full_path
+            if full_path and requested_file.is_file():
+                return FileResponse(str(requested_file))
+            return FileResponse(str(_index_html))
+
     return app
 
 
