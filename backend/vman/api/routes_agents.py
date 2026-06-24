@@ -19,24 +19,46 @@ router = APIRouter(prefix="/api/agents", tags=["agents"])
 
 
 def detect_installation(agent_id: str) -> bool:
-    """Detect if the IDE or agent is installed on the local system."""
+    """Detect if the IDE or agent is installed on the local system.
+
+    Returns True only when real evidence of the tool is found on disk or PATH.
+    """
     # Always return True in test environments to allow tests to run
     if "pytest" in sys.modules:
         return True
 
-    if agent_id == "antigravity":
-        return True  # VMAN's built-in coding assistant is always running
-    elif agent_id == "custom_mcp":
-        return True  # Custom config manual block is always available
+    # Custom MCP block is always available (documentation only)
+    if agent_id == "custom_mcp":
+        return True
 
-    if agent_id == "hermes":
-        return shutil.which("hermes") is not None
+    if agent_id == "antigravity":
+        # Check for Gemini CLI / Antigravity IDE evidence
+        if shutil.which("gemini") is not None or shutil.which("gemini.cmd") is not None:
+            return True
+        # Check for ~/.gemini config directory (sign of Gemini Code Assist / Antigravity)
+        home = os.path.expanduser("~")
+        gemini_dir = os.path.join(home, ".gemini")
+        if os.path.isdir(gemini_dir):
+            return True
+        # Check Antigravity-specific paths
+        if sys.platform == "win32":
+            localappdata = os.environ.get("LOCALAPPDATA", "")
+            if localappdata and os.path.isdir(os.path.join(localappdata, "google", "antigravity")):
+                return True
+        return False
+
+    elif agent_id == "hermes":
+        return shutil.which("hermes") is not None or shutil.which("hermes.cmd") is not None
+
     elif agent_id == "openclaw":
-        return shutil.which("openclaw") is not None
+        return shutil.which("openclaw") is not None or shutil.which("openclaw.cmd") is not None
+
     elif agent_id == "claudecode":
         return shutil.which("claude") is not None or shutil.which("claude.cmd") is not None
+
     elif agent_id == "opencode":
-        return shutil.which("opencode") is not None
+        return shutil.which("opencode") is not None or shutil.which("opencode.cmd") is not None
+
     elif agent_id == "cursor":
         # Check command PATH first
         if shutil.which("cursor") is not None or shutil.which("cursor.cmd") is not None:
@@ -51,6 +73,11 @@ def detect_installation(agent_id: str) -> bool:
         elif sys.platform == "darwin":
             if os.path.exists("/Applications/Cursor.app"):
                 return True
+        elif sys.platform.startswith("linux"):
+            # Check common Linux install locations
+            for path in ["/usr/bin/cursor", "/usr/local/bin/cursor", os.path.expanduser("~/.local/bin/cursor")]:
+                if os.path.exists(path):
+                    return True
         return False
 
     return False
@@ -77,8 +104,10 @@ def list_agents(user: CurrentUser, db: DbSession) -> list[AgentOut]:
     agents = db.execute(select(models.Agent).order_by(models.Agent.id.asc())).scalars().all()
     
     modified = False
+    detection_cache: dict[str, bool] = {}
     for agent in agents:
         is_installed = detect_installation(agent.id)
+        detection_cache[agent.id] = is_installed
         if not is_installed:
             if agent.status != "offline":
                 agent.status = "offline"
@@ -99,6 +128,7 @@ def list_agents(user: CurrentUser, db: DbSession) -> list[AgentOut]:
             status=agent.status,
             dns_status=agent.dns_status,
             domains=_parse_domains(agent.domains),
+            is_detected=detection_cache.get(agent.id, False),
             last_seen_at=agent.last_seen_at,
             created_at=agent.created_at,
             updated_at=agent.updated_at,
@@ -129,6 +159,7 @@ def toggle_dns(
         status=agent.status,
         dns_status=agent.dns_status,
         domains=_parse_domains(agent.domains),
+        is_detected=detect_installation(agent.id),
         last_seen_at=agent.last_seen_at,
         created_at=agent.created_at,
         updated_at=agent.updated_at,
@@ -163,6 +194,7 @@ def setup_agent(
         status=agent.status,
         dns_status=agent.dns_status,
         domains=_parse_domains(agent.domains),
+        is_detected=detect_installation(agent.id),
         last_seen_at=agent.last_seen_at,
         created_at=agent.created_at,
         updated_at=agent.updated_at,

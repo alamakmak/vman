@@ -51,15 +51,15 @@ def upgrade() -> None:
         {
             "id": "antigravity",
             "name": "Antigravity IDE",
-            "status": "active",
-            "dns_status": "on",
+            "status": "setup_required",
+            "dns_status": "off",
             "domains": ["daily-cloudcode-pa.googleapis.com", "cloudcode-pa.googleapis.com"],
         },
         {
             "id": "hermes",
             "name": "Hermes Agent",
-            "status": "active",
-            "dns_status": "on",
+            "status": "setup_required",
+            "dns_status": "off",
             "domains": ["api.openai.com"],
         },
         {

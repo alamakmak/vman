@@ -51,6 +51,7 @@ export interface Agent {
   status: "active" | "setup_required" | "offline";
   dns_status: "on" | "off";
   domains: string[];
+  is_detected: boolean;
   last_seen_at: string | null;
   created_at: string;
   updated_at: string;
@@ -519,39 +520,28 @@ export function AgentBridgePage() {
                         <Text fontSize="10px" color="#39FF14" fontFamily="mono">
                           ✓ Ready
                         </Text>
-                      ) : statusSetupReq ? (
-                        <Button
-                          size="xs"
-                          bg="obsidian.cyan"
-                          color="black"
-                          fontWeight="bold"
-                          fontFamily="mono"
-                          fontSize="9px"
-                          h="24px"
-                          px={3}
-                          borderRadius="sm"
-                          _hover={{ bg: "cyan.300" }}
-                          _active={{ transform: "scale(0.97)" }}
-                          onClick={() => openSetupWizard(agent)}
-                        >
-                          Activate
-                        </Button>
                       ) : (
                         <Button
                           size="xs"
-                          variant="outline"
-                          borderColor="obsidian.border"
-                          color="obsidian.onSurfaceVariant"
+                          bg={agent.is_detected ? "obsidian.cyan" : "transparent"}
+                          color={agent.is_detected ? "black" : "obsidian.onSurfaceVariant"}
                           fontWeight="bold"
                           fontFamily="mono"
                           fontSize="9px"
                           h="24px"
                           px={3}
                           borderRadius="sm"
-                          _hover={{ borderColor: "obsidian.cyan", color: "obsidian.cyan", bg: "rgba(0, 240, 255, 0.05)" }}
+                          border={agent.is_detected ? "none" : "1px solid"}
+                          borderColor={agent.is_detected ? undefined : "obsidian.border"}
+                          _hover={agent.is_detected
+                            ? { bg: "cyan.300" }
+                            : { borderColor: "obsidian.cyan", color: "obsidian.cyan", bg: "rgba(0, 240, 255, 0.05)" }
+                          }
+                          _active={{ transform: "scale(0.97)" }}
+                          leftIcon={!agent.is_detected ? <Icon as={Settings} w={3} h={3} /> : undefined}
                           onClick={() => openSetupWizard(agent)}
                         >
-                          Setup
+                          {agent.is_detected ? "Activate" : "Setup"}
                         </Button>
                       )}
                     </Box>

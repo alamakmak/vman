@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { NavLink as RouterNavLink, Outlet, useNavigate, useLocation } from "react-router-dom";
 import {
   Box,
@@ -13,6 +13,7 @@ import {
   Divider,
   Button,
 } from "@chakra-ui/react";
+import { keyframes } from "@emotion/react";
 import {
   LayoutDashboard,
   Server,
@@ -27,10 +28,22 @@ import {
   HardDrive,
   User,
   Cpu,
+  LogOut,
 } from "lucide-react";
 import { ApiClient } from "@/lib/api";
 
 const client = new ApiClient({ baseUrl: "" });
+
+const agenticPulse = keyframes`
+  0% { box-shadow: 0 0 0 0 rgba(0, 240, 255, 0.45); }
+  70% { box-shadow: 0 0 0 8px rgba(0, 240, 255, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(0, 240, 255, 0); }
+`;
+
+const agenticGlow = keyframes`
+  0%, 100% { text-shadow: 0 0 4px rgba(0, 240, 255, 0.3); }
+  50% { text-shadow: 0 0 12px rgba(0, 240, 255, 0.7), 0 0 20px rgba(0, 240, 255, 0.3); }
+`;
 
 interface NavItem {
   to: string;
@@ -56,9 +69,14 @@ const utilityItems: NavItem[] = [
   { to: "/settings", label: "Settings", icon: Settings },
 ];
 
+interface AgentStatusSummary {
+  status: string;
+}
+
 export function AppShell() {
   const [loading, setLoading] = useState(true);
   const [user, setUser] = useState<any>(null);
+  const [agentStatuses, setAgentStatuses] = useState<AgentStatusSummary[]>([]);
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -72,6 +90,18 @@ export function AppShell() {
         navigate("/login");
       });
   }, [navigate]);
+
+  // Fetch agent statuses to determine Agentless vs Agentic mode
+  useEffect(() => {
+    client.get<AgentStatusSummary[]>("/api/agents")
+      .then((data) => setAgentStatuses(data))
+      .catch(() => setAgentStatuses([]));
+  }, []);
+
+  const isAgentic = useMemo(
+    () => agentStatuses.some((a) => a.status === "active"),
+    [agentStatuses]
+  );
 
   if (loading) {
     return (
@@ -216,12 +246,35 @@ export function AppShell() {
               local-conda
             </Badge>
           </Flex>
-          <HStack spacing={2} justify="start">
-            <Icon as={User} size={12} color="obsidian.onSurfaceVariant" />
-            <Text fontSize="10px" color="obsidian.onSurfaceVariant" fontFamily="mono" isTruncated maxW="180px">
-              {user?.username} ({user?.role})
-            </Text>
-          </HStack>
+          <Flex align="center" justify="space-between">
+            <HStack spacing={2}>
+              <Icon as={User} size={12} color="obsidian.onSurfaceVariant" />
+              <Text fontSize="10px" color="obsidian.onSurfaceVariant" fontFamily="mono" isTruncated maxW="140px">
+                {user?.username} ({user?.role})
+              </Text>
+            </HStack>
+            <Button
+              size="xs"
+              variant="ghost"
+              color="obsidian.onSurfaceVariant"
+              fontFamily="mono"
+              fontSize="9px"
+              h="24px"
+              px={2}
+              leftIcon={<Icon as={LogOut} w={3} h={3} />}
+              _hover={{ color: "#F87171", bg: "rgba(239, 68, 68, 0.1)" }}
+              onClick={async () => {
+                try {
+                  await client.request("/api/auth/logout", { method: "POST" });
+                } catch {
+                  // ignore errors, proceed to redirect
+                }
+                navigate("/login");
+              }}
+            >
+              Logout
+            </Button>
+          </Flex>
         </Box>
       </Box>
 
@@ -250,8 +303,29 @@ export function AppShell() {
             </Text>
           </VStack>
           <HStack spacing={2}>
-            <Badge variant="subtle" bg="rgba(0, 240, 255, 0.1)" color="obsidian.cyan" px={2.5} py={0.5} borderRadius="sm">
-              Agentless
+            <Badge
+              variant="subtle"
+              bg={isAgentic ? "rgba(0, 240, 255, 0.15)" : "rgba(0, 240, 255, 0.1)"}
+              color="obsidian.cyan"
+              px={2.5}
+              py={0.5}
+              borderRadius="sm"
+              border={isAgentic ? "1px solid rgba(0, 240, 255, 0.3)" : "none"}
+              animation={isAgentic ? `${agenticGlow} 2s ease-in-out infinite` : "none"}
+              display="flex"
+              alignItems="center"
+              gap={1.5}
+            >
+              {isAgentic && (
+                <Box
+                  w="6px"
+                  h="6px"
+                  borderRadius="full"
+                  bg="obsidian.cyan"
+                  animation={`${agenticPulse} 2s infinite`}
+                />
+              )}
+              {isAgentic ? "Agentic" : "Agentless"}
             </Badge>
             <Badge variant="subtle" bg="rgba(57, 255, 20, 0.1)" color="obsidian.green" px={2.5} py={0.5} borderRadius="sm">
               Encrypted Vault
