@@ -6,7 +6,7 @@
  * (in development, via the Vite proxy on `/api`).
  *
  * Authentication uses session cookies issued by the backend. CSRF tokens
- * are read from the `vman-csrf-token` cookie and echoed back via the
+ * are read from the `vman_csrf` cookie and echoed back via the
  * `X-CSRF-Token` header. This matches the backend's CSRF middleware.
  */
 

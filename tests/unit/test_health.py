@@ -39,6 +39,13 @@ def test_root_path_returns_frontend_or_404(client: TestClient) -> None:
     # When it does not exist (CI / unit test env), FastAPI returns 404.
     response = client.get("/")
     assert response.status_code in (200, 404)
+    if response.status_code == 200:
+        assert "text/html" in response.headers["content-type"]
+
+
+def test_api_unknown_path_still_returns_404(client: TestClient) -> None:
+    response = client.get("/api/definitely-not-a-real-route")
+    assert response.status_code == 404
 
 
 def test_settings_default_database_is_sqlite() -> None:
