@@ -10,6 +10,7 @@ in later tasks.
 from __future__ import annotations
 
 import atexit
+from pathlib import Path
 from typing import Any
 
 import uvicorn
@@ -192,15 +193,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # When the Vite build output exists, serve it so the dashboard is
     # accessible at the root domain. In development the Vite dev server
     # handles this via proxy, so this block is a no-op.
-    from pathlib import Path
 
     # Resolve frontend/dist relative to the backend package root
     _backend_root = Path(__file__).resolve().parent.parent  # backend/
     _frontend_dist = _backend_root.parent / "frontend" / "dist"
 
     if _frontend_dist.is_dir():
-        from starlette.staticfiles import StaticFiles
         from fastapi.responses import FileResponse
+        from starlette.staticfiles import StaticFiles
 
         _index_html = _frontend_dist / "index.html"
         _assets_dir = _frontend_dist / "assets"

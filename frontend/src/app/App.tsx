@@ -3,6 +3,7 @@ import {
   Navigate,
   RouterProvider,
 } from "react-router-dom";
+import { AuthProvider, RequireAuth } from "@/app/auth";
 import { AppShell } from "@/app/AppShell";
 import { OverviewPage } from "@/pages/OverviewPage";
 import { LoginPage, SetupPage } from "@/pages/AuthPages";
@@ -35,32 +36,41 @@ const router = createBrowserRouter([
   },
   {
     path: "/",
-    element: <AppShell />,
+    element: <RequireAuth />,
     errorElement: <RouteErrorPage />,
     children: [
-      { index: true, element: <OverviewPage /> },
-      { path: "hosts", element: <HostsListPage /> },
-      { path: "hosts/new", element: <HostFormPage mode="create" /> },
-      { path: "hosts/:hostId", element: <HostDetailPage /> },
-      { path: "hosts/:hostId/edit", element: <HostFormPage mode="edit" /> },
-      { path: "topology", element: <HostTopology /> },
-      { path: "credentials", element: <CredentialsListPage /> },
-      { path: "credentials/new", element: <CredentialCreatePage /> },
-      { path: "jobs", element: <JobsListPage /> },
-      { path: "jobs/:jobId", element: <JobDetailPage /> },
-      { path: "recipes", element: <RecipesListPage /> },
-      { path: "recipes/:name", element: <RecipeDetailPage /> },
-      { path: "logs", element: <LogsPage /> },
-      { path: "audit", element: <AuditPage /> },
-      { path: "terminal", element: <TerminalPage /> },
-      { path: "agents", element: <AgentBridgePage /> },
-      { path: "settings", element: <SettingsPage /> },
-      { path: "*", element: <NotFoundPage /> },
+      {
+        element: <AppShell />,
+        children: [
+          { index: true, element: <OverviewPage /> },
+          { path: "hosts", element: <HostsListPage /> },
+          { path: "hosts/new", element: <HostFormPage mode="create" /> },
+          { path: "hosts/:hostId", element: <HostDetailPage /> },
+          { path: "hosts/:hostId/edit", element: <HostFormPage mode="edit" /> },
+          { path: "topology", element: <HostTopology /> },
+          { path: "credentials", element: <CredentialsListPage /> },
+          { path: "credentials/new", element: <CredentialCreatePage /> },
+          { path: "jobs", element: <JobsListPage /> },
+          { path: "jobs/:jobId", element: <JobDetailPage /> },
+          { path: "recipes", element: <RecipesListPage /> },
+          { path: "recipes/:name", element: <RecipeDetailPage /> },
+          { path: "logs", element: <LogsPage /> },
+          { path: "audit", element: <AuditPage /> },
+          { path: "terminal", element: <TerminalPage /> },
+          { path: "agents", element: <AgentBridgePage /> },
+          { path: "settings", element: <SettingsPage /> },
+          { path: "*", element: <NotFoundPage /> },
+        ],
+      },
     ],
   },
   { path: "*", element: <Navigate to="/" replace /> },
 ]);
 
 export function App() {
-  return <RouterProvider router={router} />;
+  return (
+    <AuthProvider>
+      <RouterProvider router={router} />
+    </AuthProvider>
+  );
 }
