@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link as RouterLink, useNavigate } from "react-router-dom";
+import { Link as RouterLink, useLocation, useNavigate } from "react-router-dom";
 import { HardDrive, LogIn, ShieldCheck } from "lucide-react";
 import { useAuth } from "@/app/auth";
 import {
@@ -17,6 +17,7 @@ import {
   Link,
 } from "@chakra-ui/react";
 import { ApiClient } from "@/lib/api";
+import { login } from "@/lib/authApi";
 
 const client = new ApiClient({ baseUrl: "" });
 
@@ -48,6 +49,7 @@ const labelStyle = {
 
 export function LoginPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const auth = useAuth();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -59,9 +61,10 @@ export function LoginPage() {
     setBusy(true);
     setErrorMessage("");
     try {
-      await client.post("/api/auth/login", { json: { username, password } });
-      await auth.refresh();
-      navigate("/");
+      const signedIn = await login({ username, password });
+      auth.setUser(signedIn);
+      const from = (location.state as { from?: { pathname?: string } } | null)?.from?.pathname ?? "/";
+      navigate(from, { replace: true });
     } catch (err: any) {
       setErrorMessage(err.message || "Invalid username or password");
     } finally {

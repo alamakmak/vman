@@ -9,6 +9,7 @@ interface AuthState {
   loading: boolean;
   error: string | null;
   refresh: () => Promise<void>;
+  setUser: (user: User | null) => void;
 }
 
 const AuthContext = createContext<AuthState | null>(null);
@@ -44,7 +45,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const value = useMemo(
-    () => ({ user, loading, error, refresh }),
+    () => ({ user, loading, error, refresh, setUser }),
     [user, loading, error],
   );
 

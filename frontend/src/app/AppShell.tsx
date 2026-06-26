@@ -31,6 +31,7 @@ import {
   LogOut,
 } from "lucide-react";
 import { ApiClient } from "@/lib/api";
+import { useAuth } from "@/app/auth";
 
 const client = new ApiClient({ baseUrl: "" });
 
@@ -74,22 +75,10 @@ interface AgentStatusSummary {
 }
 
 export function AppShell() {
-  const [loading, setLoading] = useState(true);
-  const [user, setUser] = useState<any>(null);
+  const { user, loading, setUser } = useAuth();
   const [agentStatuses, setAgentStatuses] = useState<AgentStatusSummary[]>([]);
   const navigate = useNavigate();
   const location = useLocation();
-
-  useEffect(() => {
-    client.get("/api/auth/me")
-      .then((data) => {
-        setUser(data);
-        setLoading(false);
-      })
-      .catch(() => {
-        navigate("/login");
-      });
-  }, [navigate]);
 
   // Fetch agent statuses to determine Agentless vs Agentic mode
   useEffect(() => {
@@ -269,7 +258,8 @@ export function AppShell() {
                 } catch {
                   // ignore errors, proceed to redirect
                 }
-                navigate("/login");
+                setUser(null);
+                navigate("/login", { replace: true });
               }}
             >
               Logout
