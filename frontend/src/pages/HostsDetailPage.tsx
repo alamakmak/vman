@@ -699,9 +699,9 @@ export function HostDetailPage() {
               }
             />
             <Grid
-              templateColumns="1fr 1fr"
+              templateColumns={{ base: "1fr", sm: "1fr 1fr" }}
               gap={4}
-              p={5}
+              p={{ base: 4, md: 5 }}
             >
               <DetailRow
                 label={HOST_DETAIL_FIELD_LABELS.os_name}

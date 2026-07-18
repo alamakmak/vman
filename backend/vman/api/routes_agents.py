@@ -98,11 +98,56 @@ def _parse_domains(domains: Any) -> list[str]:
     return []
 
 
+# Catalog shown in Agent Bridge. Seeded idempotently when the table is empty
+# (create_all deploys skip alembic data migrations).
+_DEFAULT_AGENTS: list[dict[str, object]] = [
+    {
+        "id": "antigravity",
+        "name": "Antigravity IDE",
+        "domains": [
+            "daily-cloudcode-pa.googleapis.com",
+            "cloudcode-pa.googleapis.com",
+        ],
+    },
+    {"id": "hermes", "name": "Hermes Agent", "domains": ["api.openai.com"]},
+    {"id": "openclaw", "name": "OpenClaw MCP", "domains": ["api.anthropic.com"]},
+    {"id": "claudecode", "name": "Claude Code", "domains": ["api.anthropic.com"]},
+    {"id": "opencode", "name": "OpenCode", "domains": ["opencode.ai"]},
+    {"id": "cursor", "name": "Cursor IDE", "domains": ["api2.cursor.sh"]},
+    {"id": "custom_mcp", "name": "Custom MCP Integration", "domains": ["localhost"]},
+]
+
+
+def ensure_default_agents(db: DbSession) -> None:
+    """Insert default agent catalog rows if the table is empty."""
+    existing = db.execute(select(models.Agent.id).limit(1)).first()
+    if existing is not None:
+        return
+    import datetime as dt
+
+    now = dt.datetime.now(dt.timezone.utc)
+    for row in _DEFAULT_AGENTS:
+        db.add(
+            models.Agent(
+                id=str(row["id"]),
+                name=str(row["name"]),
+                status="setup_required",
+                dns_status="off",
+                domains=list(row["domains"]),  # type: ignore[arg-type]
+                last_seen_at=None,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    db.commit()
+
+
 @router.get("", response_model=list[AgentOut])
 def list_agents(user: CurrentUser, db: DbSession) -> list[AgentOut]:
     """Retrieve all registered agents, auto-detecting installation status."""
+    ensure_default_agents(db)
     agents = db.execute(select(models.Agent).order_by(models.Agent.id.asc())).scalars().all()
-    
+
     modified = False
     detection_cache: dict[str, bool] = {}
     for agent in agents:
@@ -184,7 +229,41 @@ def setup_agent(
             detail=f"Cannot activate {agent.name} because it is not detected on this system."
         )
 
+    import datetime as dt
+
     agent.status = "active"
+    agent.last_seen_at = dt.datetime.now(dt.timezone.utc)
+    db.commit()
+    db.refresh(agent)
+
+    return AgentOut(
+        id=agent.id,
+        name=agent.name,
+        status=agent.status,
+        dns_status=agent.dns_status,
+        domains=_parse_domains(agent.domains),
+        is_detected=detect_installation(agent.id),
+        last_seen_at=agent.last_seen_at,
+        created_at=agent.created_at,
+        updated_at=agent.updated_at,
+    )
+
+
+@router.post("/{agent_id}/disconnect", response_model=AgentOut)
+def disconnect_agent(
+    agent_id: str,
+    user: CurrentUser,
+    db: DbSession,
+    _csrf: None = Depends(require_csrf),
+) -> AgentOut:
+    """Deactivate a bridge agent and turn DNS intercept off."""
+    agent = db.execute(select(models.Agent).where(models.Agent.id == agent_id)).scalar_one_or_none()
+    if agent is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Agent not found")
+
+    # Active → setup_required (still installed). Not installed → offline.
+    agent.status = "setup_required" if detect_installation(agent_id) else "offline"
+    agent.dns_status = "off"
     db.commit()
     db.refresh(agent)
 

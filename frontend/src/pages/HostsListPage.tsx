@@ -434,15 +434,15 @@ export function HostsListPage() {
             )}
           </Flex>
         ) : (
-          <Box overflowX="auto">
+          <Box overflowX="auto" maxW="100%" sx={{ WebkitOverflowScrolling: "touch" }}>
             {/* Table header */}
             <Flex
-              px={5}
+              px={{ base: 3, md: 5 }}
               py={2.5}
               borderBottom="1px solid"
               borderColor="obsidian.border"
               bg="#0A0A0C"
-              minW="800px"
+              minW={{ base: "680px", md: "800px" }}
             >
               {[
                 { label: "NAME", w: "18%" },
@@ -478,12 +478,12 @@ export function HostsListPage() {
               return (
                 <Flex
                   key={host.id}
-                  px={5}
+                  px={{ base: 3, md: 5 }}
                   py={3.5}
                   borderBottom="1px solid"
                   borderColor="obsidian.border"
                   align="center"
-                  minW="800px"
+                  minW={{ base: "680px", md: "800px" }}
                   _hover={{ bg: "rgba(255,255,255,0.02)", cursor: "pointer" }}
                   transition="background 0.15s"
                   onClick={() => navigate(`/hosts/${host.id}`)}

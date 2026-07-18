@@ -1,5 +1,10 @@
 import { useState, useEffect, useMemo } from "react";
-import { NavLink as RouterNavLink, Outlet, useNavigate, useLocation } from "react-router-dom";
+import {
+  NavLink as RouterNavLink,
+  Outlet,
+  useNavigate,
+  useLocation,
+} from "react-router-dom";
 import {
   Box,
   Flex,
@@ -12,6 +17,13 @@ import {
   Spinner,
   Divider,
   Button,
+  IconButton,
+  Drawer,
+  DrawerOverlay,
+  DrawerContent,
+  DrawerCloseButton,
+  DrawerBody,
+  useDisclosure,
 } from "@chakra-ui/react";
 import { keyframes } from "@emotion/react";
 import {
@@ -29,6 +41,7 @@ import {
   User,
   Cpu,
   LogOut,
+  Menu,
 } from "lucide-react";
 import { ApiClient } from "@/lib/api";
 
@@ -73,15 +86,204 @@ interface AgentStatusSummary {
   status: string;
 }
 
+function NavButtons({
+  items,
+  pathname,
+  onNavigate,
+}: {
+  items: NavItem[];
+  pathname: string;
+  onNavigate?: () => void;
+}) {
+  return (
+    <VStack align="stretch" spacing={1}>
+      {items.map((item) => {
+        const isActive = item.end
+          ? pathname === item.to
+          : pathname.startsWith(item.to) &&
+            (item.to !== "/" || pathname === "/");
+        return (
+          <Button
+            as={RouterNavLink}
+            to={item.to}
+            key={item.to}
+            variant="ghost"
+            justifyContent="start"
+            fontWeight={isActive ? "bold" : "medium"}
+            fontSize="sm"
+            h="40px"
+            px={6}
+            borderRadius="none"
+            color={isActive ? "obsidian.cyan" : "obsidian.onSurfaceVariant"}
+            bg={isActive ? "rgba(0, 240, 255, 0.05)" : "transparent"}
+            borderLeft={isActive ? "4px solid" : "4px solid transparent"}
+            borderColor={isActive ? "obsidian.cyan" : "transparent"}
+            _hover={{ bg: "rgba(255, 255, 255, 0.03)", color: "white" }}
+            leftIcon={<Icon as={item.icon} boxSize={4} />}
+            onClick={onNavigate}
+          >
+            {item.label}
+          </Button>
+        );
+      })}
+    </VStack>
+  );
+}
+
+function SidebarBody({
+  user,
+  pathname,
+  onNavigate,
+  onLogout,
+}: {
+  user: any;
+  pathname: string;
+  onNavigate?: () => void;
+  onLogout: () => void;
+}) {
+  return (
+    <>
+      <Flex
+        h="64px"
+        align="center"
+        px={6}
+        borderBottom="1px solid"
+        borderColor="obsidian.border"
+        gap={3}
+        flexShrink={0}
+      >
+        <Flex
+          h="40px"
+          w="40px"
+          align="center"
+          justify="center"
+          borderRadius="md"
+          bg="rgba(0, 240, 255, 0.1)"
+          color="obsidian.cyan"
+          boxShadow="0 0 15px rgba(0, 240, 255, 0.15)"
+          border="1px solid"
+          borderColor="rgba(0, 240, 255, 0.2)"
+        >
+          <HardDrive size={22} />
+        </Flex>
+        <VStack align="start" spacing={0}>
+          <Text
+            fontWeight="extrabold"
+            fontSize="md"
+            color="white"
+            letterSpacing="wider"
+            fontFamily="heading"
+          >
+            VMAN
+          </Text>
+          <Text
+            fontSize="10px"
+            color="obsidian.cyan"
+            fontWeight="bold"
+            fontFamily="mono"
+            letterSpacing="wider"
+          >
+            CYBER-OPS
+          </Text>
+        </VStack>
+      </Flex>
+
+      <Box flex="1" overflowY="auto" py={6} minH={0}>
+        <Text
+          px={6}
+          pb={2}
+          fontSize="10px"
+          fontWeight="bold"
+          color="obsidian.onSurfaceVariant"
+          fontFamily="mono"
+          letterSpacing="widest"
+          textTransform="uppercase"
+        >
+          Workspace
+        </Text>
+        <Box mb={6}>
+          <NavButtons items={navItems} pathname={pathname} onNavigate={onNavigate} />
+        </Box>
+
+        <Divider borderColor="obsidian.border" my={4} />
+
+        <Text
+          px={6}
+          pb={2}
+          fontSize="10px"
+          fontWeight="bold"
+          color="obsidian.onSurfaceVariant"
+          fontFamily="mono"
+          letterSpacing="widest"
+          textTransform="uppercase"
+        >
+          Utilities
+        </Text>
+        <NavButtons items={utilityItems} pathname={pathname} onNavigate={onNavigate} />
+      </Box>
+
+      <Box p={4} borderTop="1px solid" borderColor="obsidian.border" bg="#0E0E10" flexShrink={0}>
+        <Flex align="center" justify="space-between" mb={2}>
+          <Text fontSize="10px" color="obsidian.onSurfaceVariant" fontFamily="mono">
+            v0.1.0 — alpha
+          </Text>
+          <Badge
+            colorScheme="cyan"
+            bg="rgba(0, 240, 255, 0.1)"
+            color="obsidian.cyan"
+            px={2}
+            py={0.5}
+            borderRadius="sm"
+            fontSize="9px"
+          >
+            local-conda
+          </Badge>
+        </Flex>
+        <Flex align="center" justify="space-between" gap={2}>
+          <HStack spacing={2} minW={0}>
+            <Icon as={User} boxSize={3} color="obsidian.onSurfaceVariant" />
+            <Text
+              fontSize="10px"
+              color="obsidian.onSurfaceVariant"
+              fontFamily="mono"
+              isTruncated
+              maxW={{ base: "120px", md: "140px" }}
+            >
+              {user?.username} ({user?.role})
+            </Text>
+          </HStack>
+          <Button
+            size="xs"
+            variant="ghost"
+            color="obsidian.onSurfaceVariant"
+            fontFamily="mono"
+            fontSize="9px"
+            h="24px"
+            px={2}
+            flexShrink={0}
+            leftIcon={<Icon as={LogOut} w={3} h={3} />}
+            _hover={{ color: "#F87171", bg: "rgba(239, 68, 68, 0.1)" }}
+            onClick={onLogout}
+          >
+            Logout
+          </Button>
+        </Flex>
+      </Box>
+    </>
+  );
+}
+
 export function AppShell() {
   const [loading, setLoading] = useState(true);
   const [user, setUser] = useState<any>(null);
   const [agentStatuses, setAgentStatuses] = useState<AgentStatusSummary[]>([]);
   const navigate = useNavigate();
   const location = useLocation();
+  const { isOpen, onOpen, onClose } = useDisclosure();
 
   useEffect(() => {
-    client.get("/api/auth/me")
+    client
+      .get("/api/auth/me")
       .then((data) => {
         setUser(data);
         setLoading(false);
@@ -91,30 +293,66 @@ export function AppShell() {
       });
   }, [navigate]);
 
-  // Fetch agent statuses to determine Agentless vs Agentic mode
+  // Refresh agent mode badge: route change, focus, custom event, short poll.
   useEffect(() => {
-    client.get<AgentStatusSummary[]>("/api/agents")
-      .then((data) => setAgentStatuses(data))
-      .catch(() => setAgentStatuses([]));
-  }, []);
+    let cancelled = false;
+    const loadAgents = () => {
+      client
+        .get<AgentStatusSummary[]>("/api/agents")
+        .then((data) => {
+          if (!cancelled) setAgentStatuses(data);
+        })
+        .catch(() => {
+          if (!cancelled) setAgentStatuses([]);
+        });
+    };
+    loadAgents();
+    const onAgentsChanged = () => loadAgents();
+    window.addEventListener("vman:agents-changed", onAgentsChanged);
+    window.addEventListener("focus", onAgentsChanged);
+    const timer = window.setInterval(loadAgents, 5_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener("vman:agents-changed", onAgentsChanged);
+      window.removeEventListener("focus", onAgentsChanged);
+    };
+  }, [location.pathname]);
+
+  // Close mobile drawer on route change.
+  useEffect(() => {
+    onClose();
+  }, [location.pathname, onClose]);
 
   const isAgentic = useMemo(
     () => agentStatuses.some((a) => a.status === "active"),
-    [agentStatuses]
+    [agentStatuses],
   );
 
   if (loading) {
     return (
-      <Flex minH="100vh" align="center" justify="center" bg="obsidian.bg" direction="column" gap={4}>
+      <Flex
+        minH="100vh"
+        align="center"
+        justify="center"
+        bg="obsidian.bg"
+        direction="column"
+        gap={4}
+      >
         <Spinner size="xl" color="obsidian.cyan" thickness="4px" />
-        <Text color="obsidian.onSurfaceVariant" fontSize="xs" fontFamily="mono" letterSpacing="widest" textTransform="uppercase">
+        <Text
+          color="obsidian.onSurfaceVariant"
+          fontSize="xs"
+          fontFamily="mono"
+          letterSpacing="widest"
+          textTransform="uppercase"
+        >
           Authenticating with VMAN...
         </Text>
       </Flex>
     );
   }
 
-  // Get current page header title
   const currentPath = location.pathname;
   let pageTitle = "Dashboard";
   if (currentPath.startsWith("/hosts")) pageTitle = "Hosts Fleet";
@@ -128,164 +366,70 @@ export function AppShell() {
   else if (currentPath.startsWith("/terminal")) pageTitle = "Interactive Terminal";
   else if (currentPath.startsWith("/settings")) pageTitle = "System Settings";
 
+  const handleLogout = async () => {
+    try {
+      await client.request("/api/auth/logout", { method: "POST" });
+    } catch {
+      // ignore
+    }
+    navigate("/login");
+  };
+
   return (
-    <Flex minH="100vh" bg="obsidian.bg" color="gray.100">
-      {/* Sidebar navigation */}
+    <Flex minH="100vh" bg="obsidian.bg" color="gray.100" overflowX="hidden">
+      {/* Desktop sidebar */}
       <Box
         as="aside"
         w="260px"
         bg="obsidian.surface"
         borderRight="1px solid"
         borderColor="obsidian.border"
-        display="flex"
+        display={{ base: "none", lg: "flex" }}
         flexDirection="column"
         position="fixed"
         h="100vh"
         zIndex={10}
       >
-        {/* Logo / Header */}
-        <Flex h="64px" align="center" px={6} borderBottom="1px solid" borderColor="obsidian.border" gap={3}>
-          <Flex
-            h="40px"
-            w="40px"
-            align="center"
-            justify="center"
-            borderRadius="md"
-            bg="rgba(0, 240, 255, 0.1)"
-            color="obsidian.cyan"
-            boxShadow="0 0 15px rgba(0, 240, 255, 0.15)"
-            border="1px solid"
-            borderColor="rgba(0, 240, 255, 0.2)"
-          >
-            <HardDrive size={22} />
-          </Flex>
-          <VStack align="start" spacing={0}>
-            <Text fontWeight="extrabold" fontSize="md" color="white" letterSpacing="wider" fontFamily="heading">
-              VMAN
-            </Text>
-            <Text fontSize="10px" color="obsidian.cyan" fontWeight="bold" fontFamily="mono" letterSpacing="wider">
-              CYBER-OPS
-            </Text>
-          </VStack>
-        </Flex>
-
-        {/* Navigation lists */}
-        <Box flex="1" overflowY="auto" px={0} py={6}>
-          <Text px={6} pb={2} fontSize="10px" fontWeight="bold" color="obsidian.onSurfaceVariant" fontFamily="mono" letterSpacing="widest" textTransform="uppercase">
-            Workspace
-          </Text>
-          <VStack align="stretch" spacing={1} mb={6}>
-            {navItems.map((item) => {
-              const isActive = item.end
-                ? location.pathname === item.to
-                : location.pathname.startsWith(item.to) && (item.to !== "/" || location.pathname === "/");
-              return (
-                <Button
-                  as={RouterNavLink}
-                  to={item.to}
-                  key={item.to}
-                  variant="ghost"
-                  justifyContent="start"
-                  fontWeight={isActive ? "bold" : "medium"}
-                  fontSize="sm"
-                  h="40px"
-                  px={6}
-                  borderRadius="none"
-                  color={isActive ? "obsidian.cyan" : "obsidian.onSurfaceVariant"}
-                  bg={isActive ? "rgba(0, 240, 255, 0.05)" : "transparent"}
-                  borderLeft={isActive ? "4px solid" : "4px solid transparent"}
-                  borderColor={isActive ? "obsidian.cyan" : "transparent"}
-                  _hover={{ bg: "rgba(255, 255, 255, 0.03)", color: "white" }}
-                  leftIcon={<Icon as={item.icon} size={16} />}
-                >
-                  {item.label}
-                </Button>
-              );
-            })}
-          </VStack>
-
-          <Divider borderColor="obsidian.border" my={4} />
-
-          <Text px={6} pb={2} fontSize="10px" fontWeight="bold" color="obsidian.onSurfaceVariant" fontFamily="mono" letterSpacing="widest" textTransform="uppercase">
-            Utilities
-          </Text>
-          <VStack align="stretch" spacing={1}>
-            {utilityItems.map((item) => {
-              const isActive = location.pathname.startsWith(item.to);
-              return (
-                <Button
-                  as={RouterNavLink}
-                  to={item.to}
-                  key={item.to}
-                  variant="ghost"
-                  justifyContent="start"
-                  fontWeight={isActive ? "bold" : "medium"}
-                  fontSize="sm"
-                  h="40px"
-                  px={6}
-                  borderRadius="none"
-                  color={isActive ? "obsidian.cyan" : "obsidian.onSurfaceVariant"}
-                  bg={isActive ? "rgba(0, 240, 255, 0.05)" : "transparent"}
-                  borderLeft={isActive ? "4px solid" : "4px solid transparent"}
-                  borderColor={isActive ? "obsidian.cyan" : "transparent"}
-                  _hover={{ bg: "rgba(255, 255, 255, 0.03)", color: "white" }}
-                  leftIcon={<Icon as={item.icon} size={16} />}
-                >
-                  {item.label}
-                </Button>
-              );
-            })}
-          </VStack>
-        </Box>
-
-        {/* Footer info */}
-        <Box p={4} borderTop="1px solid" borderColor="obsidian.border" bg="#0E0E10">
-          <Flex align="center" justify="space-between" mb={2}>
-            <Text fontSize="10px" color="obsidian.onSurfaceVariant" fontFamily="mono">v0.1.0 — alpha</Text>
-            <Badge colorScheme="cyan" bg="rgba(0, 240, 255, 0.1)" color="obsidian.cyan" px={2} py={0.5} borderRadius="sm" fontSize="9px">
-              local-conda
-            </Badge>
-          </Flex>
-          <Flex align="center" justify="space-between">
-            <HStack spacing={2}>
-              <Icon as={User} size={12} color="obsidian.onSurfaceVariant" />
-              <Text fontSize="10px" color="obsidian.onSurfaceVariant" fontFamily="mono" isTruncated maxW="140px">
-                {user?.username} ({user?.role})
-              </Text>
-            </HStack>
-            <Button
-              size="xs"
-              variant="ghost"
-              color="obsidian.onSurfaceVariant"
-              fontFamily="mono"
-              fontSize="9px"
-              h="24px"
-              px={2}
-              leftIcon={<Icon as={LogOut} w={3} h={3} />}
-              _hover={{ color: "#F87171", bg: "rgba(239, 68, 68, 0.1)" }}
-              onClick={async () => {
-                try {
-                  await client.request("/api/auth/logout", { method: "POST" });
-                } catch {
-                  // ignore errors, proceed to redirect
-                }
-                navigate("/login");
-              }}
-            >
-              Logout
-            </Button>
-          </Flex>
-        </Box>
+        <SidebarBody
+          user={user}
+          pathname={currentPath}
+          onLogout={handleLogout}
+        />
       </Box>
 
-      {/* Main content body */}
-      <Flex direction="column" flex="1" ml="260px" minH="100vh">
+      {/* Mobile drawer */}
+      <Drawer isOpen={isOpen} placement="left" onClose={onClose} size="xs">
+        <DrawerOverlay bg="rgba(0,0,0,0.65)" />
+        <DrawerContent bg="obsidian.surface" maxW="280px">
+          <DrawerCloseButton color="white" top={4} right={3} />
+          <DrawerBody p={0} display="flex" flexDirection="column">
+            <SidebarBody
+              user={user}
+              pathname={currentPath}
+              onNavigate={onClose}
+              onLogout={handleLogout}
+            />
+          </DrawerBody>
+        </DrawerContent>
+      </Drawer>
+
+      {/* Main content */}
+      <Flex
+        direction="column"
+        flex="1"
+        ml={{ base: 0, lg: "260px" }}
+        minH="100vh"
+        minW={0}
+        w="full"
+      >
         <Flex
           as="header"
-          h="64px"
+          minH="64px"
           align="center"
           justify="space-between"
-          px={8}
+          px={{ base: 3, sm: 4, md: 6, lg: 8 }}
+          py={2}
+          gap={3}
           borderBottom="1px solid"
           borderColor="obsidian.border"
           bg="rgba(10, 10, 12, 0.8)"
@@ -294,27 +438,57 @@ export function AppShell() {
           top={0}
           zIndex={5}
         >
-          <VStack align="start" spacing={0}>
-            <Heading as="h2" size="sm" fontWeight="bold" color="white" fontFamily="heading">
-              {pageTitle}
-            </Heading>
-            <Text fontSize="xs" color="obsidian.onSurfaceVariant" fontFamily="mono">
-              Control plane session authenticated
-            </Text>
-          </VStack>
-          <HStack spacing={2}>
+          <HStack spacing={2} minW={0} flex="1">
+            <IconButton
+              aria-label="Open menu"
+              icon={<Icon as={Menu} boxSize={5} />}
+              display={{ base: "inline-flex", lg: "none" }}
+              variant="ghost"
+              color="white"
+              size="sm"
+              onClick={onOpen}
+              flexShrink={0}
+            />
+            <VStack align="start" spacing={0} minW={0}>
+              <Heading
+                as="h2"
+                size="sm"
+                fontWeight="bold"
+                color="white"
+                fontFamily="heading"
+                noOfLines={1}
+              >
+                {pageTitle}
+              </Heading>
+              <Text
+                fontSize="xs"
+                color="obsidian.onSurfaceVariant"
+                fontFamily="mono"
+                display={{ base: "none", sm: "block" }}
+                noOfLines={1}
+              >
+                Control plane session authenticated
+              </Text>
+            </VStack>
+          </HStack>
+          <HStack spacing={2} flexShrink={0} flexWrap="wrap" justify="flex-end">
             <Badge
               variant="subtle"
-              bg={isAgentic ? "rgba(0, 240, 255, 0.15)" : "rgba(0, 240, 255, 0.1)"}
+              bg={
+                isAgentic ? "rgba(0, 240, 255, 0.15)" : "rgba(0, 240, 255, 0.1)"
+              }
               color="obsidian.cyan"
               px={2.5}
               py={0.5}
               borderRadius="sm"
               border={isAgentic ? "1px solid rgba(0, 240, 255, 0.3)" : "none"}
-              animation={isAgentic ? `${agenticGlow} 2s ease-in-out infinite` : "none"}
+              animation={
+                isAgentic ? `${agenticGlow} 2s ease-in-out infinite` : "none"
+              }
               display="flex"
               alignItems="center"
               gap={1.5}
+              fontSize={{ base: "9px", sm: "xs" }}
             >
               {isAgentic && (
                 <Box
@@ -327,13 +501,29 @@ export function AppShell() {
               )}
               {isAgentic ? "Agentic" : "Agentless"}
             </Badge>
-            <Badge variant="subtle" bg="rgba(57, 255, 20, 0.1)" color="obsidian.green" px={2.5} py={0.5} borderRadius="sm">
+            <Badge
+              variant="subtle"
+              bg="rgba(57, 255, 20, 0.1)"
+              color="obsidian.green"
+              px={2.5}
+              py={0.5}
+              borderRadius="sm"
+              fontSize={{ base: "9px", sm: "xs" }}
+              display={{ base: "none", sm: "inline-flex" }}
+            >
               Encrypted Vault
             </Badge>
           </HStack>
         </Flex>
 
-        <Box p={8} flex="1" bg="obsidian.bg">
+        <Box
+          p={{ base: 3, sm: 4, md: 6, lg: 8 }}
+          flex="1"
+          bg="obsidian.bg"
+          minW={0}
+          maxW="100%"
+          overflowX="hidden"
+        >
           <Outlet />
         </Box>
       </Flex>

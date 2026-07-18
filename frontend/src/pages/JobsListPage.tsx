@@ -292,9 +292,9 @@ export function JobsListPage() {
             </Text>
           </Flex>
         ) : (
-          <Box overflowX="auto">
+          <Box overflowX="auto" maxW="100%" sx={{ WebkitOverflowScrolling: "touch" }}>
             {/* Header */}
-            <Flex px={5} py={2.5} borderBottom="1px solid" borderColor="obsidian.border" bg="#0A0A0C" minW="900px">
+            <Flex px={{ base: 3, md: 5 }} py={2.5} borderBottom="1px solid" borderColor="obsidian.border" bg="#0A0A0C" minW={{ base: "720px", md: "900px" }}>
               {[
                 { label: "ID",       w: "10%" },
                 { label: "COMMAND / RECIPE", w: "28%" },
@@ -319,8 +319,8 @@ export function JobsListPage() {
               const st = getStatusStyle(job.status);
               const risk = getRiskStyle(job.risk_level ?? "low");
               return (
-                <Flex key={job.id} px={5} py={3.5} borderBottom="1px solid" borderColor="obsidian.border"
-                  align="center" minW="900px"
+                <Flex key={job.id} px={{ base: 3, md: 5 }} py={3.5} borderBottom="1px solid" borderColor="obsidian.border"
+                  align="center" minW={{ base: "720px", md: "900px" }}
                   _hover={{ bg: "rgba(255,255,255,0.02)", cursor: "pointer" }}
                   transition="background 0.15s"
                   onClick={() => navigate(`/jobs/${job.id}`)}>

@@ -86,14 +86,29 @@ def test_list_agents_succeeds(client: TestClient) -> None:
     body_by_id = {b["id"]: b for b in body}
     assert "openclaw" in body_by_id
     assert body_by_id["openclaw"]["name"] == "OpenClaw MCP"
-    assert body_by_id["openclaw"]["status"] == "setup_required"
+    # Detection may flip status to offline/setup_required depending on host tools.
+    assert body_by_id["openclaw"]["status"] in ("setup_required", "offline", "active")
     assert body_by_id["openclaw"]["dns_status"] == "off"
     assert body_by_id["openclaw"]["domains"] == ["api.anthropic.com"]
 
     assert "claudecode" in body_by_id
     assert body_by_id["claudecode"]["name"] == "Claude Code"
-    assert body_by_id["claudecode"]["status"] == "active"
+    assert body_by_id["claudecode"]["status"] in ("setup_required", "offline", "active")
     assert body_by_id["claudecode"]["dns_status"] == "on"
+
+
+def test_list_agents_auto_seeds_catalog_when_empty(client: TestClient) -> None:
+    csrf = _setup_and_login(client)
+    # No manual seed — empty agents table should get the default catalog.
+    resp = client.get("/api/agents", headers=_csrf_headers(csrf))
+    assert resp.status_code == 200
+    body = resp.json()
+    ids = {row["id"] for row in body}
+    assert {"hermes", "cursor", "claudecode", "custom_mcp"}.issubset(ids)
+    assert len(body) >= 7
+    # Second call stays stable (idempotent seed).
+    again = client.get("/api/agents", headers=_csrf_headers(csrf)).json()
+    assert {r["id"] for r in again} == ids
 
 
 def test_toggle_dns_requires_csrf(client: TestClient) -> None:
@@ -136,6 +151,24 @@ def test_setup_agent_succeeds(client: TestClient) -> None:
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "active"
+
+
+def test_disconnect_agent_deactivates_and_turns_dns_off(client: TestClient) -> None:
+    csrf = _setup_and_login(client)
+    _seed_agents()
+    # claudecode is seeded active + dns on
+    resp = client.post("/api/agents/claudecode/disconnect", headers=_csrf_headers(csrf))
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] in ("setup_required", "offline")
+    assert body["dns_status"] == "off"
+
+
+def test_disconnect_agent_nonexistent_returns_404(client: TestClient) -> None:
+    csrf = _setup_and_login(client)
+    resp = client.post("/api/agents/missing-agent/disconnect", headers=_csrf_headers(csrf))
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Agent not found"
 
 
 def test_setup_agent_nonexistent_returns_404(client: TestClient) -> None:

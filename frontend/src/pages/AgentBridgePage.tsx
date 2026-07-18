@@ -45,6 +45,11 @@ import { ApiClient } from "@/lib/api";
 
 const client = new ApiClient({ baseUrl: "" });
 
+/** Notify AppShell header badge to re-fetch agent mode immediately. */
+function notifyAgentsChanged() {
+  window.dispatchEvent(new Event("vman:agents-changed"));
+}
+
 export interface Agent {
   id: string;
   name: string;
@@ -104,6 +109,7 @@ export function AgentBridgePage() {
     try {
       const updated = await client.request<Agent>(`/api/agents/${id}/toggle-dns`, { method: "POST" });
       setAgents((prev) => prev.map((a) => (a.id === id ? updated : a)));
+      notifyAgentsChanged();
       toast({
         title: `${updated.name} DNS: ${updated.dns_status.toUpperCase()}`,
         status: "success",
@@ -113,6 +119,31 @@ export function AgentBridgePage() {
     } catch (err) {
       toast({
         title: "Failed to toggle DNS",
+        description: err instanceof Error ? err.message : "Unknown error",
+        status: "error",
+        duration: 4000,
+        isClosable: true,
+      });
+    }
+  };
+
+  const disconnectAgent = async (id: string) => {
+    try {
+      const updated = await client.request<Agent>(`/api/agents/${id}/disconnect`, {
+        method: "POST",
+      });
+      setAgents((prev) => prev.map((a) => (a.id === id ? updated : a)));
+      notifyAgentsChanged();
+      toast({
+        title: `${updated.name} disconnected`,
+        description: "Agent deactivated; DNS intercept off.",
+        status: "success",
+        duration: 3000,
+        isClosable: true,
+      });
+    } catch (err) {
+      toast({
+        title: "Failed to disconnect agent",
         description: err instanceof Error ? err.message : "Unknown error",
         status: "error",
         duration: 4000,
@@ -517,9 +548,23 @@ export function AgentBridgePage() {
                     {/* Action Button */}
                     <Box w="15%" textAlign="right" onClick={(e) => e.stopPropagation()}>
                       {statusActive ? (
-                        <Text fontSize="10px" color="#39FF14" fontFamily="mono">
-                          ✓ Ready
-                        </Text>
+                        <Button
+                          size="xs"
+                          variant="outline"
+                          borderColor="rgba(239,68,68,0.35)"
+                          color="#F87171"
+                          fontWeight="bold"
+                          fontFamily="mono"
+                          fontSize="9px"
+                          h="24px"
+                          px={3}
+                          borderRadius="sm"
+                          _hover={{ bg: "rgba(239,68,68,0.12)", borderColor: "#F87171" }}
+                          leftIcon={<Icon as={XCircle} w={3} h={3} />}
+                          onClick={() => void disconnectAgent(agent.id)}
+                        >
+                          Disconnect
+                        </Button>
                       ) : (
                         <Button
                           size="xs"
@@ -1192,6 +1237,7 @@ export function AgentBridgePage() {
                           }
                           setVerifyStatus("success");
                           setAgents((prev) => prev.map((a) => (a.id === wizardAgent.id ? { ...updated, status: "active", dns_status: isWizardDnsOn ? "on" : "off" } : a)));
+                          notifyAgentsChanged();
                         } catch (err) {
                           setVerifyStatus("error");
                         }

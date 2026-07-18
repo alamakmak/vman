@@ -49,6 +49,10 @@ const theme = extendTheme({
   },
   styles: {
     global: {
+      "html, body, #root": {
+        maxWidth: "100%",
+        overflowX: "hidden",
+      },
       body: {
         bg: "#0A0A0C",
         color: "#e5e1e4",

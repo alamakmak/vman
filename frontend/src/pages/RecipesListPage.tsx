@@ -277,9 +277,9 @@ export function RecipesListPage() {
             </Text>
           </Flex>
         ) : (
-          <Box overflowX="auto">
+          <Box overflowX="auto" maxW="100%" sx={{ WebkitOverflowScrolling: "touch" }}>
             {/* Header */}
-            <Flex px={5} py={2.5} borderBottom="1px solid" borderColor="obsidian.border" bg="#0A0A0C" minW="900px">
+            <Flex px={{ base: 3, md: 5 }} py={2.5} borderBottom="1px solid" borderColor="obsidian.border" bg="#0A0A0C" minW={{ base: "720px", md: "900px" }}>
               {[
                 { label: "NAME",     w: "24%" },
                 { label: "VERSION",  w: "8%"  },
@@ -304,8 +304,8 @@ export function RecipesListPage() {
               const risk = getRiskStyle(recipe.risk_level);
               const needsApproval = recipeRequiresApproval(recipe.policy);
               return (
-                <Flex key={recipe.name} px={5} py={3.5} borderBottom="1px solid" borderColor="obsidian.border"
-                  align="center" minW="900px"
+                <Flex key={recipe.name} px={{ base: 3, md: 5 }} py={3.5} borderBottom="1px solid" borderColor="obsidian.border"
+                  align="center" minW={{ base: "720px", md: "900px" }}
                   _hover={{ bg: "rgba(255,255,255,0.02)", cursor: "pointer" }}
                   transition="background 0.15s"
                   onClick={() => navigate(`/recipes/${encodeURIComponent(recipe.name)}`)}>

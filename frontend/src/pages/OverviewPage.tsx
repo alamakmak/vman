@@ -80,11 +80,16 @@ export function OverviewPage() {
   }
 
   return (
-    <Flex direction="column" gap={8}>
+    <Flex direction="column" gap={{ base: 5, md: 8 }} minW={0}>
       {/* Header and Title */}
-      <Flex justify="space-between" align="end">
-        <VStack align="start" spacing={1}>
-          <Heading as="h1" size="lg" fontWeight="bold" color="white" letterSpacing="-0.02em">
+      <Flex
+        justify="space-between"
+        align={{ base: "stretch", sm: "end" }}
+        direction={{ base: "column", sm: "row" }}
+        gap={3}
+      >
+        <VStack align="start" spacing={1} minW={0}>
+          <Heading as="h1" size={{ base: "md", md: "lg" }} fontWeight="bold" color="white" letterSpacing="-0.02em">
             Fleet Summary
           </Heading>
           <Text fontSize="sm" color="obsidian.onSurfaceVariant" fontFamily="mono">
@@ -100,6 +105,7 @@ export function OverviewPage() {
           fontFamily="mono"
           px={5}
           borderRadius="md"
+          alignSelf={{ base: "stretch", sm: "auto" }}
           _hover={{ bg: "brand.200" }}
           leftIcon={<Icon as={Plus} size={14} />}
           boxShadow="inset 0 -2px 0 rgba(0,0,0,0.2)"
