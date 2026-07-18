@@ -79,7 +79,7 @@ async def terminal_ws(websocket: WebSocket, host_id: str) -> None:
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Host not found")
             return
 
-        # Reveal credentials
+        # Reveal credentials via shared vault helper
         password = None
         private_key = None
         passphrase = None
@@ -89,40 +89,40 @@ async def terminal_ws(websocket: WebSocket, host_id: str) -> None:
             try:
                 master_key_bytes = decode_master_key_from_env(settings.master_key)
                 vault = Vault(master_key=master_key_bytes, session_factory=db_session_factory)
-                plaintext = vault.reveal(credential_id=host.credential_id)
-
-                cred = db.get(models.Credential, host.credential_id)
-                if cred:
-                    if cred.kind == "ssh_password":
-                        password = plaintext
-                    elif cred.kind == "ssh_private_key":
-                        private_key = plaintext
-                    elif cred.kind == "ssh_private_key_passphrase":
-                        if host.auth_method == "password":
-                            password = plaintext
-                        else:
-                            private_key = plaintext
-                    else:
-                        if host.auth_method == "password":
-                            password = plaintext
-                        elif host.auth_method in ("key", "key_with_passphrase"):
-                            private_key = plaintext
+                material = vault.reveal_ssh_for_host(host)
+                password = material.password
+                private_key = material.private_key
+                passphrase = material.passphrase
             except Exception as e:
-                logger.error(f"Failed to decrypt vault credential: {e}")
+                logger.error("Failed to decrypt vault credential: %s", type(e).__name__)
+                await websocket.close(
+                    code=status.WS_1011_INTERNAL_ERROR, reason="Failed to decrypt credential"
+                )
+                return
 
-    # Use paramiko to connect to the SSH host
+    # Use paramiko to connect to the SSH host with strict host-key check.
+    from vman.security.host_keys import parse_fingerprint
+    from vman.services.ssh_runner import HostKeyMismatchError, _make_host_key_policy
+
+    expected_fp = None
+    if host.host_key_fingerprint and host.host_key_algorithm:
+        try:
+            expected_fp = parse_fingerprint(host.host_key_algorithm, host.host_key_fingerprint)
+        except ValueError:
+            expected_fp = None
+
     client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.set_missing_host_key_policy(_make_host_key_policy(expected_fp))
 
     pkey = None
     if private_key:
         key_file = io.StringIO(private_key)
-        for key_cls in (
-            paramiko.Ed25519Key,
-            paramiko.RSAKey,
-            paramiko.ECDSAKey,
-            paramiko.DSSKey,
-        ):
+        key_classes = [
+            cls
+            for name in ("Ed25519Key", "RSAKey", "ECDSAKey", "DSSKey")
+            if (cls := getattr(paramiko, name, None)) is not None
+        ]
+        for key_cls in key_classes:
             try:
                 key_file.seek(0)
                 pkey = key_cls.from_private_key(key_file, password=passphrase)
@@ -146,6 +146,9 @@ async def terminal_ws(websocket: WebSocket, host_id: str) -> None:
             allow_agent=False,
             look_for_keys=False,
         )
+    except HostKeyMismatchError as exc:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason=str(exc)[:120])
+        return
     except Exception as exc:
         await websocket.close(code=status.WS_1011_INTERNAL_ERROR, reason=f"SSH connection failed: {exc}")
         return

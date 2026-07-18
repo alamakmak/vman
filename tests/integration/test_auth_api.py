@@ -30,6 +30,9 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("VMAN_ENV", "development")
     monkeypatch.setenv("VMAN_DATABASE_URL", f"sqlite:///{db_path}")
     monkeypatch.setenv("VMAN_DOTENV_PATH", "/dev/null")
+    # Never inherit a production setup token into the test process.
+    monkeypatch.delenv("VMAN_SETUP_TOKEN", raising=False)
+    monkeypatch.setenv("VMAN_SETUP_TOKEN", "")
     reset_engine()
     get_settings.cache_clear()  # type: ignore[attr-defined]
     # Reset the in-process login rate limiter between tests so one test's
@@ -74,6 +77,49 @@ def test_setup_creates_first_owner(client: TestClient) -> None:
         json={"username": "bob", "password": "another-strong-passphrase!!"},
     )
     assert resp.status_code in (400, 409)
+
+
+def test_auth_status_before_and_after_setup(client: TestClient) -> None:
+    before = client.get("/api/auth/status")
+    assert before.status_code == 200
+    body = before.json()
+    assert body["setup_required"] is True
+    assert body["setup_token_required"] is False
+
+    _setup_admin(client)
+
+    after = client.get("/api/auth/status")
+    assert after.status_code == 200
+    assert after.json()["setup_required"] is False
+
+
+def test_setup_requires_token_when_configured(client: TestClient, monkeypatch) -> None:
+    monkeypatch.setenv("VMAN_SETUP_TOKEN", "deploy-secret-token-xyz")
+    get_settings.cache_clear()  # type: ignore[attr-defined]
+
+    # Fresh app so settings re-read env
+    from vman.main import create_app
+
+    c = TestClient(create_app())
+    denied = c.post(
+        "/api/auth/setup",
+        json={"username": "alice", "password": "S3cret-passphrase!!"},
+    )
+    assert denied.status_code == 403
+
+    ok = c.post(
+        "/api/auth/setup",
+        json={
+            "username": "alice",
+            "password": "S3cret-passphrase!!",
+            "setup_token": "deploy-secret-token-xyz",
+        },
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.cookies.get("vman_session"), "setup should auto-login"
+    assert c.get("/api/auth/me").status_code == 200
+
+    get_settings.cache_clear()  # type: ignore[attr-defined]
 
 
 def test_setup_rejects_short_password(client: TestClient) -> None:
@@ -136,6 +182,8 @@ def test_me_returns_current_user_when_authenticated(client: TestClient) -> None:
 
 def test_me_returns_401_when_no_cookie(client: TestClient) -> None:
     _setup_admin(client)
+    # Setup now auto-logs in; clear cookies to assert unauthenticated /me.
+    client.cookies.clear()
     resp = client.get("/api/auth/me")
     assert resp.status_code == 401
 
@@ -246,3 +294,43 @@ def test_login_rate_limit_tracks_username_across_forwarded_for_spoofing(client: 
     )
     assert blocked.status_code == 429
     assert blocked.headers.get("retry-after") == "300"
+
+
+def test_change_password_requires_current_and_updates(client: TestClient) -> None:
+    _setup_admin(client, password="old-password-12345")
+    # setup auto-login; get csrf
+    csrf = client.cookies.get("vman_csrf") or ""
+    bad = client.post(
+        "/api/auth/password",
+        json={"current_password": "wrong", "new_password": "new-password-12345"},
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert bad.status_code == 401
+
+    ok = client.post(
+        "/api/auth/password",
+        json={
+            "current_password": "old-password-12345",
+            "new_password": "new-password-12345",
+        },
+        headers={"X-CSRF-Token": csrf},
+    )
+    assert ok.status_code == 200, ok.text
+
+    # old password fails
+    client.cookies.clear()
+    assert (
+        client.post(
+            "/api/auth/login",
+            json={"username": "alice", "password": "old-password-12345"},
+        ).status_code
+        == 401
+    )
+    # new password works
+    assert (
+        client.post(
+            "/api/auth/login",
+            json={"username": "alice", "password": "new-password-12345"},
+        ).status_code
+        == 200
+    )

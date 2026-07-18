@@ -141,24 +141,55 @@ def delete_credential(
     credential_id: str,
     user: CurrentUser,
     _csrf: None = Depends(require_csrf),
+    force: bool = False,
 ) -> dict[str, str]:
+    """Delete a vault credential.
+
+    Blocked while any *active* (non-disabled) host still references it.
+    Soft-deleted hosts no longer block deletion; their credential_id is
+    cleared so the link cannot resurrect a deleted secret.
+    Pass ``?force=true`` to also detach active hosts (sets their
+    credential_id to null) then delete.
+    """
     session_factory = get_sessionmaker()
     with session_factory() as session:
-        # Check if used by any host
-        host_count = session.execute(
-            select(models.Host).where(models.Host.credential_id == credential_id)
-        ).scalars().all()
-        if host_count:
+        active_hosts = (
+            session.execute(
+                select(models.Host).where(
+                    models.Host.credential_id == credential_id,
+                    models.Host.disabled_at.is_(None),
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if active_hosts and not force:
+            names = ", ".join(sorted(h.name for h in active_hosts)[:5])
+            extra = f" (+{len(active_hosts) - 5} more)" if len(active_hosts) > 5 else ""
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="This credential is currently in use by one or more hosts and cannot be deleted."
+                detail=(
+                    f"Credential still used by active host(s): {names}{extra}. "
+                    "Remove or reassign the host first, or delete with force=true."
+                ),
             )
+
+        # Clear credential_id on every host that pointed here (active or soft-deleted).
+        linked = (
+            session.execute(
+                select(models.Host).where(models.Host.credential_id == credential_id)
+            )
+            .scalars()
+            .all()
+        )
+        for host in linked:
+            host.credential_id = None
 
         cred = session.get(models.Credential, credential_id)
         if cred is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail="Credential not found."
+                detail="Credential not found.",
             )
         session.delete(cred)
         session.commit()

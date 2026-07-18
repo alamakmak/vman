@@ -23,6 +23,8 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv("VMAN_ENV", "development")
     monkeypatch.setenv("VMAN_DATABASE_URL", f"sqlite:///{db_path}")
     monkeypatch.setenv("VMAN_DOTENV_PATH", "/dev/null")
+    monkeypatch.delenv("VMAN_SETUP_TOKEN", raising=False)
+    monkeypatch.setenv("VMAN_SETUP_TOKEN", "")
     reset_engine()
     get_settings.cache_clear()  # type: ignore[attr-defined]
     from sqlalchemy import create_engine
@@ -39,12 +41,9 @@ def client(tmp_path, monkeypatch):
 
 
 def _setup_and_login(client: TestClient) -> str:
+    # Setup auto-logs in and sets cookies; no second login needed.
     client.post(
         "/api/auth/setup",
-        json={"username": "alice", "password": "S3cret-passphrase!!"},
-    )
-    client.post(
-        "/api/auth/login",
         json={"username": "alice", "password": "S3cret-passphrase!!"},
     )
     return client.cookies.get("vman_csrf") or ""
@@ -170,6 +169,38 @@ def test_delete_host_is_soft(client: TestClient) -> None:
     assert resp.status_code == 200
     resp = client.get("/api/hosts", headers=_csrf_headers(csrf))
     assert all(h["id"] != host_id for h in resp.json())
+
+
+def test_can_recreate_host_with_same_name_after_soft_delete(client: TestClient) -> None:
+    csrf = _setup_and_login(client)
+    payload = {
+        "name": "2c4gb",
+        "hostname_or_ip": "10.0.0.50",
+        "ssh_port": 22,
+        "username": "root",
+        "auth_method": "key",
+    }
+    first = client.post("/api/hosts", json=payload, headers=_csrf_headers(csrf))
+    assert first.status_code == 201, first.text
+    host_id = first.json()["id"]
+    assert client.delete(f"/api/hosts/{host_id}", headers=_csrf_headers(csrf)).status_code == 200
+
+    again = client.post(
+        "/api/hosts",
+        json={
+            **payload,
+            "hostname_or_ip": "10.0.0.51",
+            "ssh_port": 2222,
+        },
+        headers=_csrf_headers(csrf),
+    )
+    assert again.status_code == 201, again.text
+    assert again.json()["name"] == "2c4gb"
+    assert again.json()["id"] != host_id
+    # list shows only the new active host with that name
+    listed = client.get("/api/hosts", headers=_csrf_headers(csrf)).json()
+    names = [h["name"] for h in listed]
+    assert names.count("2c4gb") == 1
 
 
 def test_name_must_be_unique(client: TestClient) -> None:

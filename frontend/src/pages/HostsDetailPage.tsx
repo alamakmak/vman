@@ -302,6 +302,33 @@ export function HostDetailPage() {
     try {
       const result = await testConnection(host.id);
       setTestResult(result);
+      // Merge detected fields from the test response so Detected OS updates
+      // immediately (no full page reload). Also re-fetch for full consistency.
+      setHost((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          host_key_fingerprint:
+            result.host_key_fingerprint ?? prev.host_key_fingerprint,
+          host_key_algorithm:
+            result.host_key_algorithm ?? prev.host_key_algorithm,
+          os_family: result.os_family ?? prev.os_family,
+          os_name: result.os_name ?? prev.os_name,
+          os_version: result.os_version ?? prev.os_version,
+          package_manager: result.package_manager ?? prev.package_manager,
+          arch: result.arch ?? prev.arch,
+          cpu_cores: result.cpu_cores ?? prev.cpu_cores,
+          ram_mb: result.ram_mb ?? prev.ram_mb,
+          disk_total_mb: result.disk_total_mb ?? prev.disk_total_mb,
+          last_seen_at: result.last_seen_at ?? prev.last_seen_at,
+        };
+      });
+      try {
+        const row = await getHost(host.id);
+        setHost(row);
+      } catch {
+        // Keep merged state if refresh fails.
+      }
     } catch (err) {
       const msg =
         err instanceof HostApiError

@@ -231,62 +231,77 @@ class RecipeEngine:
         ]
         cumulative_index = 0
         failure: StepOutcome | None = None
-        for phase_name, phase_items in phases:
-            for item in phase_items:
-                if failure is not None:
-                    self._service.append_log(
-                        job_id=job_id,
-                        stream="system",
-                        line="skipping step due to earlier failure",
-                    )
-                    self._record_step(
+        # Keep one SSH session for the whole recipe (open/close if supported).
+        open_fn = getattr(runner, "open", None)
+        close_fn = getattr(runner, "close", None)
+        if callable(open_fn):
+            try:
+                open_fn()
+            except Exception:
+                pass  # fake runners in tests may not implement open
+        try:
+            for phase_name, phase_items in phases:
+                for item in phase_items:
+                    if failure is not None:
+                        self._service.append_log(
+                            job_id=job_id,
+                            stream="system",
+                            line="skipping step due to earlier failure",
+                        )
+                        self._record_step(
+                            job_id=job_id,
+                            phase=phase_name,
+                            index=cumulative_index,
+                            name=item["name"],
+                            status="skipped",
+                            exit_code=None,
+                        )
+                        cumulative_index += 1
+                        continue
+                    outcome = self._run_one_step(
                         job_id=job_id,
                         phase=phase_name,
                         index=cumulative_index,
-                        name=item["name"],
-                        status="skipped",
-                        exit_code=None,
+                        item=item,
+                        vars_values=effective_vars,
+                        runner=runner,
+                        timeout=float(timeout_seconds),
                     )
                     cumulative_index += 1
-                    continue
-                outcome = self._run_one_step(
+                    if outcome.status != "success":
+                        failure = outcome
+            if failure is not None:
+                self._service.complete(
                     job_id=job_id,
-                    phase=phase_name,
-                    index=cumulative_index,
-                    item=item,
-                    vars_values=effective_vars,
-                    runner=runner,
-                    timeout=float(timeout_seconds),
+                    exit_code=failure.exit_code or 1,
+                    error_summary=f"recipe step {failure.name!r} failed",
                 )
-                cumulative_index += 1
-                if outcome.status != "success":
-                    failure = outcome
-        if failure is not None:
-            self._service.complete(
-                job_id=job_id,
-                exit_code=failure.exit_code or 1,
-                error_summary=f"recipe step {failure.name!r} failed",
-            )
-            for rb in recipe.get("rollback") or []:
-                self._run_one_step(
-                    job_id=job_id,
-                    phase="rollback",
-                    index=cumulative_index,
-                    item=rb,
-                    vars_values=effective_vars,
-                    runner=runner,
-                    timeout=float(timeout_seconds),
-                )
-                cumulative_index += 1
-        else:
-            self._service.complete(job_id=job_id, exit_code=0)
+                for rb in recipe.get("rollback") or []:
+                    self._run_one_step(
+                        job_id=job_id,
+                        phase="rollback",
+                        index=cumulative_index,
+                        item=rb,
+                        vars_values=effective_vars,
+                        runner=runner,
+                        timeout=float(timeout_seconds),
+                    )
+                    cumulative_index += 1
+            else:
+                self._service.complete(job_id=job_id, exit_code=0)
+        finally:
+            if callable(close_fn):
+                try:
+                    close_fn()
+                except Exception:
+                    pass
         return job_id
 
     def _build_runner(self, host):
         if self._ssh_runner_factory is not None:
             return self._ssh_runner_factory(host)
         from vman.security.host_keys import parse_fingerprint
-        from vman.services.ssh_runner import SshRunner, SubprocessTransport
+        from vman.services.ssh_runner import SshRunner, build_transport_for_host
 
         expected_fp = None
         if host.host_key_fingerprint and host.host_key_algorithm:
@@ -294,8 +309,9 @@ class RecipeEngine:
                 expected_fp = parse_fingerprint(host.host_key_algorithm, host.host_key_fingerprint)
             except ValueError:
                 expected_fp = None
+        transport = build_transport_for_host(host, session_factory=self._session_factory)
         return SshRunner(
-            transport=SubprocessTransport(),
+            transport=transport,
             host=host.hostname_or_ip,
             port=host.ssh_port,
             username=host.username,

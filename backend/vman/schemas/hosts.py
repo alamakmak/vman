@@ -180,6 +180,16 @@ class ConnectionTestResult(BaseModel):
     latency_ms: float | None = None
     message: str
     tested_at: str
+    # Detected fields so the dashboard can refresh without a second GET.
+    os_family: str | None = None
+    os_name: str | None = None
+    os_version: str | None = None
+    package_manager: str | None = None
+    arch: str | None = None
+    cpu_cores: int | None = None
+    ram_mb: int | None = None
+    disk_total_mb: int | None = None
+    last_seen_at: str | None = None
 
 
 __all__ = ["HostCreate", "HostOut", "HostUpdate", "ConnectionTestResult"]

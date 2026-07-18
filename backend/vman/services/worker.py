@@ -2,8 +2,8 @@
 
 The MVP worker is a simple single-threaded loop that:
 1. claims the oldest queued+approved job (FIFO)
-2. builds an SshRunner for the host (or a SubprocessTransport for
-   dev / test)
+2. builds an SshRunner for the host (Paramiko when credential present;
+   SubprocessTransport for local/dev hosts without credentials)
 3. runs the command, redacting each output line and persisting it
 4. marks the job success / failed / cancelled
 5. loops
@@ -29,8 +29,8 @@ from vman.services.jobs import JobService
 from vman.services.ssh_runner import (
     CommandResult,
     SshRunner,
-    SubprocessTransport,
     Transport,
+    build_transport_for_host,
 )
 
 log = logging.getLogger("vman.worker")
@@ -91,7 +91,10 @@ class JobWorker:
     def _build_transport(self, host: models.Host) -> Transport:
         if self._transport_factory is not None:
             return self._transport_factory(host)
-        return SubprocessTransport()
+        # Real hosts with vault credentials go over SSH. Hosts without
+        # a credential (test seeds, local-only) stay on SubprocessTransport
+        # so the existing job integration tests keep working.
+        return build_transport_for_host(host, session_factory=self._session_factory)
 
     def _process_one(self) -> bool:
         """Claim and run at most one job. Return True if a job was processed."""

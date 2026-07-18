@@ -103,6 +103,32 @@ class HostService:
         notes: str = "",
     ) -> models.Host:
         now = dt.datetime.now(dt.timezone.utc)
+        # Free the name if only a soft-deleted host still holds it.
+        with self._session_factory() as session:
+            active = session.execute(
+                select(models.Host).where(
+                    models.Host.name == name,
+                    models.Host.disabled_at.is_(None),
+                )
+            ).scalar_one_or_none()
+            if active is not None:
+                raise HostServiceError(f"host with name {name!r} already exists")
+            stale = (
+                session.execute(
+                    select(models.Host).where(
+                        models.Host.name == name,
+                        models.Host.disabled_at.is_not(None),
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for row in stale:
+                row.name = f"{name}__deleted_{row.id[:8]}"
+                row.credential_id = None
+            if stale:
+                session.commit()
+
         host = models.Host(
             id=uuid.uuid4().hex,
             name=name,
@@ -232,8 +258,13 @@ class HostService:
             if row is None:
                 raise HostServiceError(f"host not found: {host_id}")
             now = dt.datetime.now(dt.timezone.utc)
+            original_name = row.name
             row.disabled_at = now
             row.updated_at = now
+            # Free unique name + vault link so recreate / credential delete work.
+            row.credential_id = None
+            if not row.name.endswith(f"__deleted_{row.id[:8]}"):
+                row.name = f"{row.name}__deleted_{row.id[:8]}"
             session.commit()
             session.refresh(row)
             session.expunge(row)
@@ -245,7 +276,7 @@ class HostService:
             action="host.delete",
             resource_type="host",
             resource_id=host.id,
-            metadata={"name": host.name},
+            metadata={"name": original_name, "tombstone_name": host.name},
         )
         return host
 
@@ -281,12 +312,8 @@ class HostService:
             session.expunge(host)
 
         if ssh_runner_factory is None:
-            # Build a real SshRunner. The caller is responsible for
-            # providing credentials + a transport; for the MVP we
-            # wire the SubprocessTransport so detection is local.
-            from vman.services.ssh_runner import SubprocessTransport
+            from vman.services.ssh_runner import build_transport_for_host
 
-            transport = SubprocessTransport()
             expected_fp = None
             if host.host_key_fingerprint and host.host_key_algorithm:
                 try:
@@ -297,6 +324,7 @@ class HostService:
                     )
                 except ValueError:
                     expected_fp = None
+            transport = build_transport_for_host(host, session_factory=self._session_factory)
             runner = SshRunner(
                 transport=transport,
                 host=host.hostname_or_ip,
@@ -310,24 +338,55 @@ class HostService:
         # Run each probe and collect the outputs. A failed probe
         # results in an empty string for that field; the parser
         # returns Unknown for the affected fields.
-        outputs: dict[str, str] = {}
-        for label, cmd in [
-            ("os_release", "cat /etc/os-release"),
-            ("uname", "uname -m"),
-            ("free_m", "free -m"),
-            ("df_m", "df -m /"),
-            ("dpkg_q", "dpkg -l 2>/dev/null || true"),
-            ("rpm_qa", "rpm -qa 2>/dev/null || true"),
-            ("pacman_q", "pacman -Q 2>/dev/null || true"),
-        ]:
+        open_fn = getattr(runner, "open", None)
+        close_fn = getattr(runner, "close", None)
+        if callable(open_fn):
             try:
-                result = runner.run(cmd, timeout=15.0)
-                if result.exit_code == 0:
-                    outputs[label] = result.stdout
+                open_fn()
             except Exception:
-                outputs[label] = ""
+                pass
+        outputs: dict[str, str] = {}
+        try:
+            for label, cmd in [
+                ("os_release", "cat /etc/os-release 2>/dev/null || cat /usr/lib/os-release 2>/dev/null || true"),
+                ("uname", "uname -m"),
+                ("free_m", "free -m"),
+                ("df_m", "df -m /"),
+                ("dpkg_q", "dpkg -l 2>/dev/null | head -n 5 || true"),
+                ("rpm_qa", "rpm -qa 2>/dev/null | head -n 5 || true"),
+                ("pacman_q", "pacman -Q 2>/dev/null | head -n 5 || true"),
+                ("nproc", "nproc 2>/dev/null || grep -c '^processor' /proc/cpuinfo 2>/dev/null || true"),
+            ]:
+                try:
+                    result = runner.run(cmd, timeout=15.0)
+                    if result.exit_code == 0:
+                        outputs[label] = result.stdout
+                except Exception:
+                    outputs[label] = ""
+        finally:
+            if callable(close_fn):
+                try:
+                    close_fn()
+                except Exception:
+                    pass
 
-        info = detect_from_outputs(**outputs)
+        info = detect_from_outputs(
+            os_release=outputs.get("os_release", ""),
+            uname=outputs.get("uname", ""),
+            free_m=outputs.get("free_m", ""),
+            df_m=outputs.get("df_m", ""),
+            dpkg_q=outputs.get("dpkg_q", ""),
+            rpm_qa=outputs.get("rpm_qa", ""),
+            pacman_q=outputs.get("pacman_q", ""),
+        )
+        nproc = (outputs.get("nproc") or "").strip()
+        cpu_cores = int(nproc) if nproc.isdigit() else None
+
+        pretty = ""
+        for line in (outputs.get("os_release") or "").splitlines():
+            if line.startswith("PRETTY_NAME="):
+                pretty = line.split("=", 1)[1].strip().strip('"')
+                break
 
         # Persist the detected fields.
         with self._session_factory() as session:
@@ -336,12 +395,13 @@ class HostService:
             ).scalar_one_or_none()
             if host is None:
                 raise HostServiceError(f"host not found: {host_id}")
-            host.os_family = info.os_family
-            host.os_name = info.os_name
-            host.os_version = info.os_version
+            host.os_family = info.os_family if info.os_family != "unknown" else None
+            host.os_name = pretty or info.os_name or None
+            host.os_version = info.os_version or None
             host.package_manager = info.package_manager
-            host.arch = info.arch
-            host.ram_total_mb = info.ram_total_mb
+            host.arch = info.arch if info.arch != "unknown" else None
+            host.cpu_cores = cpu_cores
+            host.ram_mb = info.ram_total_mb
             host.disk_total_mb = info.disk_total_mb
             host.last_seen_at = dt.datetime.now(dt.timezone.utc)
             host.updated_at = host.last_seen_at
@@ -358,13 +418,9 @@ class HostService:
             resource_id=updated.id,
             metadata={
                 "name": updated.name,
-                "os_family": updated.os_family,
                 "os_name": updated.os_name,
                 "os_version": updated.os_version,
-                "package_manager": updated.package_manager,
-                "arch": updated.arch,
-                "ram_total_mb": updated.ram_total_mb,
-                "disk_total_mb": updated.disk_total_mb,
+                "os_family": updated.os_family,
             },
         )
         return updated

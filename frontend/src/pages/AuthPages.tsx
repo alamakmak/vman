@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link as RouterLink, useNavigate } from "react-router-dom";
 import { HardDrive, LogIn, ShieldCheck } from "lucide-react";
 import { useAuth } from "@/app/auth";
@@ -19,6 +19,11 @@ import {
 import { ApiClient } from "@/lib/api";
 
 const client = new ApiClient({ baseUrl: "" });
+
+type AuthStatus = {
+  setup_required: boolean;
+  setup_token_required: boolean;
+};
 
 // ─── Field Styles ──────────────────────────────────────────────────────────
 
@@ -53,6 +58,22 @@ export function LoginPage() {
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
+  const [status, setStatus] = useState<AuthStatus | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const s = await client.get<AuthStatus>("/api/auth/status");
+        if (!cancelled) setStatus(s);
+      } catch {
+        if (!cancelled) setStatus({ setup_required: false, setup_token_required: false });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -80,7 +101,6 @@ export function LoginPage() {
         borderRadius="md"
         overflow="hidden"
       >
-        {/* Header */}
         <Box bg="#0E0E10" px={6} py={5} borderBottom="1px solid" borderColor="obsidian.border" textAlign="center">
           <Flex
             mx="auto"
@@ -101,11 +121,12 @@ export function LoginPage() {
             Sign in to VMAN
           </Heading>
           <Text fontSize="xs" color="obsidian.onSurfaceVariant" fontFamily="mono">
-            USE ADMIN CREDENTIALS OR INITIATE SETUP
+            {status?.setup_required
+              ? "NO OWNER ACCOUNT YET — COMPLETE SETUP FIRST"
+              : "ENTER YOUR OPERATOR CREDENTIALS"}
           </Text>
         </Box>
 
-        {/* Form */}
         <Box as="form" onSubmit={handleSubmit} p={6}>
           <VStack spacing={4} align="stretch">
             {errorMessage && (
@@ -160,18 +181,21 @@ export function LoginPage() {
               {busy ? "Signing in…" : "Sign in"}
             </Button>
 
-            <Text textAlign="center" fontSize="11px" color="obsidian.onSurfaceVariant" fontFamily="mono" pt={2}>
-              NO ACCOUNT YET?{" "}
-              <Link
-                as={RouterLink}
-                to="/setup"
-                color="obsidian.cyan"
-                textDecoration="none"
-                _hover={{ textDecoration: "underline" }}
-              >
-                RUN FIRST-TIME SETUP
-              </Link>
-            </Text>
+            {/* Setup link only when no users exist yet */}
+            {status?.setup_required && (
+              <Text textAlign="center" fontSize="11px" color="obsidian.onSurfaceVariant" fontFamily="mono" pt={2}>
+                First install?{" "}
+                <Link
+                  as={RouterLink}
+                  to="/setup"
+                  color="obsidian.cyan"
+                  textDecoration="none"
+                  _hover={{ textDecoration: "underline" }}
+                >
+                  Create owner account
+                </Link>
+              </Text>
+            )}
           </VStack>
         </Box>
       </Box>
@@ -181,12 +205,36 @@ export function LoginPage() {
 
 export function SetupPage() {
   const navigate = useNavigate();
+  const auth = useAuth();
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [setupToken, setSetupToken] = useState("");
   const [busy, setBusy] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
-  const [successMessage, setSuccessMessage] = useState("");
+  const [status, setStatus] = useState<AuthStatus | null>(null);
+  const [statusLoading, setStatusLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const s = await client.get<AuthStatus>("/api/auth/status");
+        if (cancelled) return;
+        setStatus(s);
+        if (!s.setup_required) {
+          navigate("/login", { replace: true });
+        }
+      } catch {
+        if (!cancelled) setStatus({ setup_required: false, setup_token_required: false });
+      } finally {
+        if (!cancelled) setStatusLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [navigate]);
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -196,25 +244,41 @@ export function SetupPage() {
     }
     setBusy(true);
     setErrorMessage("");
-    setSuccessMessage("");
     try {
+      const headers: Record<string, string> = {};
+      if (setupToken.trim()) {
+        headers["X-VMAN-Setup-Token"] = setupToken.trim();
+      }
       await client.post("/api/auth/setup", {
         json: {
           username,
           password,
           email: email.trim() || null,
+          setup_token: setupToken.trim() || null,
         },
+        headers,
       });
-      setSuccessMessage("First-time setup completed! Redirecting to login...");
-      setTimeout(() => {
-        navigate("/login");
-      }, 2000);
+      // Setup now sets session cookie — land on dashboard.
+      await auth.refresh();
+      navigate("/", { replace: true });
     } catch (err: any) {
       setErrorMessage(err.message || "Failed to complete setup");
     } finally {
       setBusy(false);
     }
   };
+
+  if (statusLoading) {
+    return (
+      <Flex minH="100vh" align="center" justify="center" bg="obsidian.bg">
+        <Spinner color="obsidian.cyan" />
+      </Flex>
+    );
+  }
+
+  if (status && !status.setup_required) {
+    return null;
+  }
 
   return (
     <Flex minH="100vh" align="center" justify="center" bg="obsidian.bg" p={6}>
@@ -227,7 +291,6 @@ export function SetupPage() {
         borderRadius="md"
         overflow="hidden"
       >
-        {/* Header */}
         <Box bg="#0E0E10" px={6} py={5} borderBottom="1px solid" borderColor="obsidian.border" textAlign="center">
           <Flex
             mx="auto"
@@ -245,28 +308,19 @@ export function SetupPage() {
             <Icon as={ShieldCheck} w={5} h={5} />
           </Flex>
           <Heading size="sm" color="white" fontFamily="mono" textTransform="uppercase" letterSpacing="wider" mb={1}>
-            First-time setup
+            Create owner account
           </Heading>
           <Text fontSize="xs" color="obsidian.onSurfaceVariant" fontFamily="mono">
-            CREATE THE PRIMARY OWNER ADMINISTRATIVE ACCOUNT
+            ONE-TIME BOOTSTRAP — LOCKS AFTER FIRST USER
           </Text>
         </Box>
 
-        {/* Form */}
         <Box as="form" onSubmit={handleSubmit} p={6}>
           <VStack spacing={4} align="stretch">
             {errorMessage && (
               <Box bg="rgba(255,49,49,0.08)" border="1px solid rgba(255,49,49,0.2)" borderRadius="md" p={3}>
                 <Text fontSize="xs" color="#FF3131" fontFamily="mono">
                   {errorMessage.toUpperCase()}
-                </Text>
-              </Box>
-            )}
-
-            {successMessage && (
-              <Box bg="rgba(57,255,20,0.07)" border="1px solid rgba(57,255,20,0.2)" borderRadius="md" p={3}>
-                <Text fontSize="xs" color="#39FF14" fontFamily="mono">
-                  {successMessage.toUpperCase()}
                 </Text>
               </Box>
             )}
@@ -302,12 +356,31 @@ export function SetupPage() {
                 id="setup-password"
                 name="password"
                 type="password"
+                autoComplete="new-password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="Minimum 12 characters"
                 sx={inputStyle}
               />
             </FormControl>
+
+            {status?.setup_token_required && (
+              <FormControl isRequired>
+                <FormLabel sx={labelStyle}>Setup token</FormLabel>
+                <Input
+                  id="setup-token"
+                  name="setup_token"
+                  type="password"
+                  value={setupToken}
+                  onChange={(e) => setSetupToken(e.target.value)}
+                  placeholder="From VMAN_SETUP_TOKEN / server env"
+                  sx={inputStyle}
+                />
+                <Text fontSize="10px" color="obsidian.onSurfaceVariant" fontFamily="mono" mt={1}>
+                  Required by this install. Ask the operator who deployed the server.
+                </Text>
+              </FormControl>
+            )}
 
             <Flex gap={3} pt={2}>
               <Link as={RouterLink} to="/login" flex={1}>
@@ -327,7 +400,11 @@ export function SetupPage() {
               </Link>
               <Button
                 type="submit"
-                disabled={busy || password.length < 12}
+                disabled={
+                  busy ||
+                  password.length < 12 ||
+                  (status?.setup_token_required && !setupToken.trim())
+                }
                 bg="obsidian.cyan"
                 color="black"
                 flex={1}
@@ -338,7 +415,7 @@ export function SetupPage() {
                 fontFamily="mono"
                 fontSize="xs"
               >
-                {busy ? "Setting up…" : "Register"}
+                {busy ? "Setting up…" : "Create owner"}
               </Button>
             </Flex>
           </VStack>

@@ -51,8 +51,9 @@ def test_classify_pacman_install_is_medium() -> None:
     assert classify_command("pacman -S --noconfirm curl") == RiskLevel.MEDIUM
 
 
-def test_classify_systemctl_restart_is_medium() -> None:
-    assert classify_command("systemctl restart nginx") == RiskLevel.MEDIUM
+def test_classify_systemctl_restart_is_high() -> None:
+    assert classify_command("systemctl restart nginx") == RiskLevel.HIGH
+    assert classify_command("systemctl reload nginx") == RiskLevel.HIGH
 
 
 def test_classify_firewall_change_is_high() -> None:

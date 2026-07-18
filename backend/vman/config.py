@@ -75,6 +75,11 @@ class Settings(BaseSettings):
 
     session_secret: str = _default_session_secret
 
+    # Optional shared secret for first-owner bootstrap. When set, POST
+    # /api/auth/setup requires matching X-VMAN-Setup-Token (or body field).
+    # Leave empty only for local/dev empty DBs you fully control.
+    setup_token: str = ""
+
     # ------------------------------------------------------------------ #
     # Validators
     # ------------------------------------------------------------------ #

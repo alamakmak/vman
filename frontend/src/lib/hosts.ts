@@ -135,6 +135,15 @@ export interface ConnectionTestResult {
   latency_ms: number | null;
   message: string;
   tested_at: string;
+  os_family?: string | null;
+  os_name?: string | null;
+  os_version?: string | null;
+  package_manager?: string | null;
+  arch?: string | null;
+  cpu_cores?: number | null;
+  ram_mb?: number | null;
+  disk_total_mb?: number | null;
+  last_seen_at?: string | null;
 }
 
 export const HOST_DETAIL_FIELD_LABELS: Record<string, string> = {

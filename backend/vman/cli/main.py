@@ -626,6 +626,118 @@ def auth_logout(
         raise typer.Exit(code=1) from exc
 
 
+@auth_app.command("passwd")
+def auth_passwd(
+    ctx: typer.Context,
+    current_password: str = typer.Option(
+        ...,
+        "--current",
+        prompt=True,
+        hide_input=True,
+        help="Current account password.",
+    ),
+    new_password: str = typer.Option(
+        ...,
+        "--new",
+        prompt=True,
+        hide_input=True,
+        confirmation_prompt=True,
+        help="New password (min 12 chars).",
+    ),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Change the password for the currently logged-in user."""
+    formatter = OutputFormatter(as_json=json_output)
+    ctx.ensure_object(dict)
+    ctx.obj["json"] = json_output
+    if len(new_password) < 12:
+        formatter.emit_error("new password must be at least 12 characters")
+        raise typer.Exit(code=1)
+    try:
+        with _build_client(ctx) as client:
+            _require_authenticated(client)
+            resp = client.post(
+                "/api/auth/password",
+                json_body={
+                    "current_password": current_password,
+                    "new_password": new_password,
+                },
+                with_csrf=True,
+            )
+            if resp.status == 401:
+                formatter.emit_error("current password is incorrect")
+                raise typer.Exit(code=1)
+            _ensure_ok(resp, action="change password")
+            formatter.emit_message("password updated")
+    except CLIError as exc:
+        formatter.emit_error(str(exc))
+        raise typer.Exit(code=1) from exc
+
+
+@auth_app.command("reset-owner")
+def auth_reset_owner(
+    username: str = typer.Option("owner", "--username", "-u", help="Username to reset."),
+    new_password: str = typer.Option(
+        ...,
+        "--new",
+        prompt=True,
+        hide_input=True,
+        confirmation_prompt=True,
+        help="New password (min 12 chars).",
+    ),
+    database_url: str | None = typer.Option(
+        None,
+        "--database-url",
+        envvar="VMAN_DATABASE_URL",
+        help="SQLite/Postgres URL (defaults to env / production path).",
+    ),
+    json_output: bool = typer.Option(False, "--json"),
+) -> None:
+    """Break-glass: set a user's password directly against the DB (server only).
+
+    Does not need a login session. Run as root on the control plane with
+    access to the VMAN database. Revokes all sessions for that user.
+    """
+    formatter = OutputFormatter(as_json=json_output)
+    if len(new_password) < 12:
+        formatter.emit_error("new password must be at least 12 characters")
+        raise typer.Exit(code=1)
+
+    from sqlalchemy import create_engine, select
+    from sqlalchemy.orm import sessionmaker
+
+    from vman.db import models
+    from vman.security.auth import hash_password
+
+    url = database_url or os.environ.get("VMAN_DATABASE_URL") or "sqlite:////var/lib/vman/vman.db"
+    eng = create_engine(url, future=True)
+    Session = sessionmaker(bind=eng, autoflush=False, expire_on_commit=False)
+    try:
+        with Session() as session:
+            user = session.execute(
+                select(models.User).where(models.User.username == username)
+            ).scalar_one_or_none()
+            if user is None:
+                formatter.emit_error(f"user not found: {username}")
+                raise typer.Exit(code=1)
+            user.password_hash = hash_password(new_password)
+            now = dt.datetime.now(dt.timezone.utc)
+            for sess in session.execute(
+                select(models.UserSession).where(
+                    models.UserSession.user_id == user.id,
+                    models.UserSession.revoked_at.is_(None),
+                )
+            ).scalars().all():
+                sess.revoked_at = now
+            session.commit()
+        if formatter.is_json:
+            formatter.emit({"status": "ok", "username": username})
+        else:
+            formatter.emit_message(f"password reset for {username}; all sessions revoked")
+    finally:
+        eng.dispose()
+
+
 def _parse_set_cookie(header_value: str, name: str) -> str | None:
     """Pull a single cookie value out of a ``Set-Cookie`` header string.
 

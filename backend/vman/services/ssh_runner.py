@@ -5,14 +5,13 @@ remote connections. It is transport-abstracted: a ``Transport`` is any
 object that implements ``connect``, ``run``, ``disconnect``, and
 ``server_host_key``. The MVP provides a :class:`SubprocessTransport`
 that runs commands locally (used for dev-loop recipes and tests) and
-a stub where AsyncSSH or Paramiko can plug in later.
+:class:`ParamikoTransport` for real SSH.
 
 Security notes
 --------------
 - The runner is the single component that holds decrypted vault
   credentials in memory for the lifetime of an SSH session. After
-  ``run()`` returns, the transport is closed; secrets are NOT held
-  any longer than the command itself.
+  ``disconnect()``, secrets are NOT held any longer than needed.
 - Every byte of stdout and stderr passes through the redactor
   before being returned, so a leaked password printed by a remote
   command is replaced with ``REDACTED`` on the way back.
@@ -32,6 +31,7 @@ from typing import Protocol
 
 from vman.security.host_keys import (
     HostKeyFingerprint,
+    fingerprint_from_public_key_bytes,
     fingerprints_match,
 )
 from vman.security.redaction import Redactor, default_redactor
@@ -132,15 +132,161 @@ class SubprocessTransport:
         self._connected = False
 
     def server_host_key(self) -> HostKeyFingerprint:
-        from vman.security.host_keys import (
-            fingerprint_from_public_key_bytes,
-        )
-
         return fingerprint_from_public_key_bytes("ssh-ed25519", self._key_blob)
 
 
+def _make_host_key_policy(expected: HostKeyFingerprint | None):
+    """Paramiko MissingHostKeyPolicy: capture key; reject on fingerprint mismatch."""
+    import paramiko
+
+    class _CaptureHostKeyPolicy(paramiko.MissingHostKeyPolicy):
+        def __init__(self) -> None:
+            self.captured_key = None
+
+        def missing_host_key(self, client, hostname, key) -> None:  # noqa: ANN001
+            self.captured_key = key
+            if expected is None:
+                # First-trust path: accept and record; caller stores fingerprint.
+                client.get_host_keys().add(hostname, key.get_name(), key)
+                return
+            got = fingerprint_from_public_key_bytes(key.get_name(), key.asbytes())
+            if not fingerprints_match(expected, got):
+                raise HostKeyMismatchError(
+                    f"host key fingerprint mismatch: expected {expected!s}, got {got!s}"
+                )
+            client.get_host_keys().add(hostname, key.get_name(), key)
+
+    return _CaptureHostKeyPolicy()
+
+
+class ParamikoTransport:
+    """A real SSH transport that uses the paramiko library."""
+
+    def __init__(
+        self,
+        *,
+        password: str | None = None,
+        private_key: str | None = None,
+        passphrase: str | None = None,
+        expected_fingerprint: HostKeyFingerprint | None = None,
+        connect_timeout: float = 10.0,
+    ) -> None:
+        self._password = password
+        self._private_key = private_key
+        self._passphrase = passphrase
+        self._expected_fingerprint = expected_fingerprint
+        self._connect_timeout = connect_timeout
+        self._client = None
+        self._host_key = None
+        self._policy = None
+
+    def connect(self, *, host: str, port: int, user: str) -> None:
+        import io
+
+        import paramiko
+
+        if self._client is not None:
+            return
+
+        self._client = paramiko.SSHClient()
+        self._policy = _make_host_key_policy(self._expected_fingerprint)
+        self._client.set_missing_host_key_policy(self._policy)
+
+        pkey = None
+        if self._private_key:
+            key_file = io.StringIO(self._private_key)
+            # Paramiko 5+ dropped DSSKey; probe only classes that exist.
+            key_classes = [
+                cls
+                for name in ("Ed25519Key", "RSAKey", "ECDSAKey", "DSSKey")
+                if (cls := getattr(paramiko, name, None)) is not None
+            ]
+            for key_cls in key_classes:
+                try:
+                    key_file.seek(0)
+                    pkey = key_cls.from_private_key(key_file, password=self._passphrase)
+                    break
+                except Exception:
+                    continue
+            if pkey is None:
+                raise RuntimeError(
+                    "Failed to parse private key (expected PEM). "
+                    "Host auth_method is key but vault secret is not a private key — "
+                    "use kind ssh_private_key or switch host to password auth."
+                )
+
+        self._client.connect(
+            hostname=host,
+            port=port,
+            username=user,
+            password=self._password,
+            pkey=pkey,
+            timeout=self._connect_timeout,
+            allow_agent=False,
+            look_for_keys=False,
+        )
+
+        transport = self._client.get_transport()
+        if transport:
+            self._host_key = transport.get_remote_server_key()
+        elif self._policy.captured_key is not None:
+            self._host_key = self._policy.captured_key
+
+    def run(
+        self,
+        *,
+        command: str,
+        timeout: float,
+        env: dict[str, str] | None = None,
+    ) -> CommandResult:
+        if not self._client:
+            raise RuntimeError("transport not connected")
+        started = time.time()
+        try:
+            _stdin, stdout, stderr = self._client.exec_command(
+                command, timeout=timeout, environment=env
+            )
+            exit_code = stdout.channel.recv_exit_status()
+            return CommandResult(
+                stdout=stdout.read().decode("utf-8", errors="replace"),
+                stderr=stderr.read().decode("utf-8", errors="replace"),
+                exit_code=exit_code,
+                started_at=started,
+                duration_s=time.time() - started,
+                timed_out=False,
+            )
+        except Exception as exc:
+            # paramiko raises socket.timeout on command timeout in some paths
+            timed_out = "timed out" in str(exc).lower() or type(exc).__name__ == "timeout"
+            return CommandResult(
+                stdout="",
+                stderr=str(exc),
+                exit_code=124 if timed_out else 255,
+                started_at=started,
+                duration_s=time.time() - started,
+                timed_out=timed_out,
+            )
+
+    def disconnect(self) -> None:
+        if self._client:
+            self._client.close()
+            self._client = None
+
+    def server_host_key(self) -> HostKeyFingerprint:
+        if not self._host_key:
+            raise RuntimeError("not connected")
+        key_name = self._host_key.get_name()
+        key_bytes = self._host_key.asbytes()
+        return fingerprint_from_public_key_bytes(key_name, key_bytes)
+
+
 class SshRunner:
-    """High-level SSH command runner with strict host key + redaction."""
+    """High-level SSH command runner with strict host key + redaction.
+
+    Connection is reused across multiple ``run()`` calls until
+    ``close()`` / context exit. One-shot callers still work: first
+    ``run()`` connects, and they may call ``close()`` when done.
+    """
 
     def __init__(
         self,
@@ -158,10 +304,47 @@ class SshRunner:
         self._username = username
         self._expected_fingerprint = expected_fingerprint
         self._redactor = redactor or default_redactor()
+        self._connected = False
+        self._host_key_checked = False
 
     def register_secret_for_redaction(self, secret: str) -> None:
         """Register a plaintext secret that may appear in command output."""
         self._redactor.register(secret)
+
+    def __enter__(self) -> SshRunner:
+        self.open()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+    def open(self) -> None:
+        """Connect and verify host key once."""
+        if self._connected:
+            return
+        self._transport.connect(host=self._host, port=self._port, user=self._username)
+        self._connected = True
+        self._verify_host_key()
+
+    def close(self) -> None:
+        if self._connected:
+            self._transport.disconnect()
+            self._connected = False
+            self._host_key_checked = False
+
+    def _verify_host_key(self) -> None:
+        if self._host_key_checked or self._expected_fingerprint is None:
+            self._host_key_checked = True
+            return
+        server_key = self._transport.server_host_key()
+        if not fingerprints_match(self._expected_fingerprint, server_key):
+            self.close()
+            raise HostKeyMismatchError(
+                f"host key fingerprint mismatch: expected "
+                f"{self._expected_fingerprint!s}, got "
+                f"{server_key!s}"
+            )
+        self._host_key_checked = True
 
     def run(
         self,
@@ -169,20 +352,13 @@ class SshRunner:
         *,
         timeout: float = 30.0,
         env: dict[str, str] | None = None,
+        close_after: bool = False,
     ) -> CommandResult:
         if not command or not command.strip():
             raise ValueError("command must be a non-empty string")
-        self._transport.connect(host=self._host, port=self._port, user=self._username)
+        own_session = not self._connected
         try:
-            # Strict host key check happens once, before any command.
-            if self._expected_fingerprint is not None:
-                server_key = self._transport.server_host_key()
-                if not fingerprints_match(self._expected_fingerprint, server_key):
-                    raise HostKeyMismatchError(
-                        f"host key fingerprint mismatch: expected "
-                        f"{self._expected_fingerprint!s}, got "
-                        f"{server_key!s}"
-                    )
+            self.open()
             raw = self._transport.run(command=command, timeout=timeout, env=env)
             return CommandResult(
                 stdout=self._redactor.redact(raw.stdout),
@@ -193,111 +369,50 @@ class SshRunner:
                 timed_out=raw.timed_out,
             )
         finally:
-            self._transport.disconnect()
+            # One-shot default: disconnect after each run so callers that
+            # never call close() still free the socket. Multi-step recipes
+            # should use open()/context manager so own_session is False.
+            if own_session or close_after:
+                self.close()
 
 
-class ParamikoTransport:
-    """A real SSH transport that uses the paramiko library."""
+def build_transport_for_host(
+    host,
+    *,
+    session_factory,
+    force_local: bool = False,
+):
+    """Build the right Transport for a Host row.
 
-    def __init__(
-        self,
-        *,
-        password: str | None = None,
-        private_key: str | None = None,
-        passphrase: str | None = None,
-    ) -> None:
-        self._password = password
-        self._private_key = private_key
-        self._passphrase = passphrase
-        self._client = None
-        self._host_key = None
+    - ``force_local`` or missing credential → SubprocessTransport (tests/dev)
+    - otherwise decrypt vault and return ParamikoTransport
+    """
+    if force_local or not getattr(host, "credential_id", None):
+        return SubprocessTransport()
 
-    def connect(self, *, host: str, port: int, user: str) -> None:
-        import io
-        import paramiko
+    from vman.config import get_settings
+    from vman.security.crypto import decode_master_key_from_env
+    from vman.security.host_keys import parse_fingerprint
+    from vman.services.vault import Vault
 
-        self._client = paramiko.SSHClient()
-        self._client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    settings = get_settings()
+    master_key = decode_master_key_from_env(settings.master_key)
+    vault = Vault(master_key=master_key, session_factory=session_factory)
+    material = vault.reveal_ssh_for_host(host)
 
-        pkey = None
-        if self._private_key:
-            key_file = io.StringIO(self._private_key)
-            for key_cls in (
-                paramiko.Ed25519Key,
-                paramiko.RSAKey,
-                paramiko.ECDSAKey,
-                paramiko.DSSKey,
-            ):
-                try:
-                    key_file.seek(0)
-                    pkey = key_cls.from_private_key(key_file, password=self._passphrase)
-                    break
-                except Exception:
-                    continue
-            if pkey is None:
-                raise RuntimeError("Failed to parse private key")
-
-        self._client.connect(
-            hostname=host,
-            port=port,
-            username=user,
-            password=self._password,
-            pkey=pkey,
-            timeout=10.0,
-            allow_agent=False,
-            look_for_keys=False,
-        )
-
-        transport = self._client.get_transport()
-        if transport:
-            self._host_key = transport.get_remote_server_key()
-
-    def run(
-        self,
-        *,
-        command: str,
-        timeout: float,
-        env: dict[str, str] | None = None,
-    ) -> CommandResult:
-        if not self._client:
-            raise RuntimeError("transport not connected")
-        started = time.time()
+    expected_fp = None
+    if host.host_key_fingerprint and host.host_key_algorithm:
         try:
-            stdin, stdout, stderr = self._client.exec_command(
-                command, timeout=timeout, environment=env
-            )
-            exit_code = stdout.channel.recv_exit_status()
-            return CommandResult(
-                stdout=stdout.read().decode("utf-8", errors="replace"),
-                stderr=stderr.read().decode("utf-8", errors="replace"),
-                exit_code=exit_code,
-                started_at=started,
-                duration_s=time.time() - started,
-                timed_out=False,
-            )
-        except Exception as exc:
-            return CommandResult(
-                stdout="",
-                stderr=str(exc),
-                exit_code=255,
-                started_at=started,
-                duration_s=time.time() - started,
-                timed_out=False,
-            )
+            expected_fp = parse_fingerprint(host.host_key_algorithm, host.host_key_fingerprint)
+        except ValueError:
+            expected_fp = None
 
-    def disconnect(self) -> None:
-        if self._client:
-            self._client.close()
-            self._client = None
-
-    def server_host_key(self) -> HostKeyFingerprint:
-        if not self._host_key:
-            raise RuntimeError("not connected")
-        from vman.security.host_keys import fingerprint_from_public_key_bytes
-
-        key_name = self._host_key.get_name()
-        key_bytes = self._host_key.asbytes()
-        return fingerprint_from_public_key_bytes(key_name, key_bytes)
+    return ParamikoTransport(
+        password=material.password,
+        private_key=material.private_key,
+        passphrase=material.passphrase,
+        expected_fingerprint=expected_fp,
+    )
 
 
 __all__ = [
@@ -307,5 +422,5 @@ __all__ = [
     "SubprocessTransport",
     "ParamikoTransport",
     "Transport",
+    "build_transport_for_host",
 ]
-

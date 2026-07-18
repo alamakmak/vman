@@ -24,7 +24,8 @@ Security contracts enforced here:
 
 from __future__ import annotations
 
-from typing import Final
+from dataclasses import dataclass
+from typing import Final, Mapping
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
@@ -45,6 +46,78 @@ class VaultError(Exception):
 _DEFAULT_KIND: Final[str] = "ssh_password"
 
 
+@dataclass(frozen=True)
+class SshAuthMaterial:
+    """Decrypted material needed to open an SSH session.
+
+    Exactly one of password / private_key is typically set. passphrase
+    is only used when private_key is encrypted.
+    """
+
+    password: str | None = None
+    private_key: str | None = None
+    passphrase: str | None = None
+
+
+def map_credential_to_ssh_auth(
+    *,
+    kind: str,
+    plaintext: str,
+    auth_method: str,
+    metadata: Mapping[str, object] | None = None,
+) -> SshAuthMaterial:
+    """Map one vault credential into SSH auth fields.
+
+    Rules (single primary credential on the host):
+    - ``ssh_password`` → password
+    - ``ssh_private_key`` → private_key; optional passphrase from
+      ``metadata["passphrase"]`` (legacy) or left for a second reveal
+    - ``ssh_private_key_passphrase`` → passphrase only, unless
+      ``metadata["private_key"]`` holds a PEM (bundled key+pass)
+    - ``sudo_password`` / non-PEM secrets never treated as private keys
+    - content sniffing: PEM-looking secrets become private_key even if
+      kind/auth_method are mis-set; plain secrets become password
+
+    Linked second credential (key_with_passphrase) is resolved by
+    :meth:`Vault.reveal_ssh_for_host`, not here.
+    """
+    if not plaintext:
+        raise VaultError("plaintext must be a non-empty string")
+    meta = dict(metadata or {})
+    looks_like_pem = "BEGIN" in plaintext and "PRIVATE KEY" in plaintext
+
+    if kind == "ssh_password":
+        return SshAuthMaterial(password=plaintext)
+
+    if kind == "ssh_private_key":
+        if not looks_like_pem:
+            raise VaultError(
+                "credential kind is ssh_private_key but secret is not a PEM private key"
+            )
+        extra = meta.get("passphrase")
+        passphrase = extra if isinstance(extra, str) and extra else None
+        return SshAuthMaterial(private_key=plaintext, passphrase=passphrase)
+
+    if kind == "ssh_private_key_passphrase":
+        # Passphrase-only credential. Optionally bundle PEM in metadata
+        # when the operator stored both in one vault entry.
+        pk = meta.get("private_key")
+        if isinstance(pk, str) and "BEGIN" in pk:
+            return SshAuthMaterial(private_key=pk, passphrase=plaintext)
+        return SshAuthMaterial(passphrase=plaintext)
+
+    if kind == "sudo_password":
+        # Never treat sudo password as an SSH private key.
+        return SshAuthMaterial(password=plaintext)
+
+    # api_token / unknown: sniff content, then fall back to auth_method.
+    if looks_like_pem:
+        return SshAuthMaterial(private_key=plaintext)
+    if auth_method == "password" or not looks_like_pem:
+        return SshAuthMaterial(password=plaintext)
+    return SshAuthMaterial(private_key=plaintext)
+
+
 def _build_aad(credential_id: str, kind: str) -> bytes:
     """Construct AAD binding a ciphertext to its credential identity.
 
@@ -63,6 +136,10 @@ class Vault:
     exactly what we want inside the worker, and exactly what we do
     NOT want inside the API process. The API should never construct
     a ``Vault``; only the worker and the CLI should.
+
+    Note: connection-test and terminal routes currently also construct
+    a Vault (MVP compromise so the dashboard can verify SSH without a
+    separate worker hop). Prefer worker/CLI for bulk decryption.
     """
 
     def __init__(self, master_key: bytes, session_factory: sessionmaker[Session]) -> None:
@@ -144,6 +221,64 @@ class Vault:
             raise VaultError("vault decryption failed") from exc
         return plaintext_bytes.decode("utf-8")
 
+    def reveal_ssh_for_host(self, host: models.Host) -> SshAuthMaterial:
+        """Decrypt host credential(s) into SSH auth material.
+
+        Primary credential is ``host.credential_id``. When auth_method is
+        ``key_with_passphrase`` and the primary is a key, a second vault
+        entry may be referenced via ``metadata_json[\"passphrase_credential_id\"]``
+        on the key credential (or on the host via future schema).
+        """
+        if not host.credential_id:
+            raise VaultError("host has no credential_id")
+
+        with self._session_factory() as session:
+            cred = session.execute(
+                select(models.Credential).where(models.Credential.id == host.credential_id)
+            ).scalar_one_or_none()
+            if cred is None:
+                raise VaultError(f"credential not found: {host.credential_id}")
+            kind = cred.kind
+            meta = dict(cred.metadata_json or {})
+            ciphertext = bytes(cred.encrypted_payload)
+            aad = _build_aad(cred.id, kind)
+            passphrase_cred_id = meta.get("passphrase_credential_id")
+            if not isinstance(passphrase_cred_id, str):
+                passphrase_cred_id = None
+
+        try:
+            plaintext = decrypt_bytes(self._master_key, ciphertext, aad=aad).decode("utf-8")
+        except CryptoError as exc:
+            raise VaultError("vault decryption failed") from exc
+
+        material = map_credential_to_ssh_auth(
+            kind=kind,
+            plaintext=plaintext,
+            auth_method=host.auth_method,
+            metadata=meta,
+        )
+
+        # Second hop: encrypted key needs a separate passphrase credential.
+        if (
+            material.private_key
+            and not material.passphrase
+            and host.auth_method == "key_with_passphrase"
+            and passphrase_cred_id
+        ):
+            phrase = self.reveal(credential_id=passphrase_cred_id)
+            material = SshAuthMaterial(
+                password=material.password,
+                private_key=material.private_key,
+                passphrase=phrase,
+            )
+
+        if not material.password and not material.private_key:
+            raise VaultError(
+                "credential does not yield SSH password or private key "
+                f"(kind={kind!r}, auth_method={host.auth_method!r})"
+            )
+        return material
+
     # ------------------------------------------------------------------ #
     # Internals
     # ------------------------------------------------------------------ #
@@ -165,4 +300,9 @@ class Vault:
         return row.id
 
 
-__all__ = ["Vault", "VaultError"]
+__all__ = [
+    "SshAuthMaterial",
+    "Vault",
+    "VaultError",
+    "map_credential_to_ssh_auth",
+]

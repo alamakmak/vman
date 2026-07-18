@@ -5,7 +5,6 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from vman.api.deps import CurrentUser
-from vman.config import get_settings
 from vman.db import models
 from vman.db.session import get_sessionmaker
 from vman.schemas.hosts import HostCreate, HostOut, HostUpdate, ConnectionTestResult
@@ -13,8 +12,7 @@ from vman.security.audit import AuditService
 from vman.security.csrf import require_csrf
 from vman.security.redaction import default_redactor
 from vman.services.hosts import HostService, HostServiceError
-from vman.services.vault import Vault
-from vman.services.ssh_runner import SshRunner, ParamikoTransport
+from vman.services.ssh_runner import SshRunner, build_transport_for_host
 from vman.security.host_keys import parse_fingerprint
 
 router = APIRouter(prefix="/api/hosts", tags=["hosts"])
@@ -172,11 +170,11 @@ def test_connection(
     user: CurrentUser,
     _csrf: None = Depends(require_csrf),
 ) -> ConnectionTestResult:
-    import time
     import datetime as dt
-    from vman.security.crypto import decode_master_key_from_env
+    import time
 
-    # 1. Get host
+    from vman.services.os_detection import detect_from_outputs
+
     service = _service()
     host = service.get(host_id)
     if not host:
@@ -184,50 +182,16 @@ def test_connection(
 
     tested_at = dt.datetime.now(dt.timezone.utc).isoformat()
 
-    # 2. Get credentials from Vault
-    password = None
-    private_key = None
-    passphrase = None
-
-    if host.credential_id:
-        settings = get_settings()
-        try:
-            master_key_bytes = decode_master_key_from_env(settings.master_key)
-            vault = Vault(master_key=master_key_bytes, session_factory=get_sessionmaker())
-            plaintext = vault.reveal(credential_id=host.credential_id)
-
-            with get_sessionmaker()() as db_session:
-                cred = db_session.get(models.Credential, host.credential_id)
-                if cred:
-                    if cred.kind == "ssh_password":
-                        password = plaintext
-                    elif cred.kind == "ssh_private_key":
-                        private_key = plaintext
-                    elif cred.kind == "ssh_private_key_passphrase":
-                        # If a key passphrase is provided, we treat it as passphrase and private key.
-                        # For the MVP, if the host method is key, we treat plaintext as private key.
-                        # If auth method is key_with_passphrase, we can handle it or use a default.
-                        if host.auth_method == "password":
-                            password = plaintext
-                        else:
-                            private_key = plaintext
-                    else:
-                        # Fallback for other credential types (e.g. sudo_password, api_token)
-                        if host.auth_method == "password":
-                            password = plaintext
-                        elif host.auth_method in ("key", "key_with_passphrase"):
-                            private_key = plaintext
-        except Exception as exc:
-            return ConnectionTestResult(
-                ok=False,
-                reached=False,
-                authenticated=False,
-                message=f"Failed to retrieve or decrypt credential: {exc}",
-                tested_at=tested_at,
-            )
-
-    # 3. Perform connection test
-    transport = ParamikoTransport(password=password, private_key=private_key, passphrase=passphrase)
+    try:
+        transport = build_transport_for_host(host, session_factory=get_sessionmaker())
+    except Exception as exc:
+        return ConnectionTestResult(
+            ok=False,
+            reached=False,
+            authenticated=False,
+            message=f"Failed to retrieve or decrypt credential: {exc}",
+            tested_at=tested_at,
+        )
 
     expected_fp = None
     if host.host_key_fingerprint and host.host_key_algorithm:
@@ -246,94 +210,12 @@ def test_connection(
 
     start_time = time.time()
     try:
-        # Run a simple echo command to test connection
+        runner.open()
         result = runner.run("echo 'ping'", timeout=10.0)
         latency = (time.time() - start_time) * 1000.0
-
         server_key = transport.server_host_key()
 
-        # Automatically store host key fingerprint on successful first connection
-        if not host.host_key_fingerprint:
-            service.update(
-                host_id=host.id,
-                actor_user_id=user.id,
-                host_key_fingerprint=server_key.fingerprint,
-                host_key_algorithm=server_key.algorithm,
-            )
-
-        if result.exit_code == 0:
-            # ── Gather OS information ──────────────────────────────────────
-            os_update: dict = {}
-            try:
-                def _run(cmd: str) -> str:
-                    r = runner.run(cmd, timeout=10.0)
-                    return r.stdout.strip() if r.exit_code == 0 else ""
-
-                raw_id = _run(
-                    "cat /etc/os-release 2>/dev/null || "
-                    "cat /usr/lib/os-release 2>/dev/null || echo ''"
-                )
-
-                def _field(key: str) -> str:
-                    for line in raw_id.splitlines():
-                        if line.startswith(f"{key}="):
-                            return line.split("=", 1)[1].strip().strip('"')
-                    return ""
-
-                detected_name    = _field("NAME") or _field("ID")
-                detected_version = _field("VERSION_ID") or _field("VERSION")
-                pkg_mgr = ""
-                for pm in ("apt", "yum", "dnf", "zypper", "apk", "pacman"):
-                    if _run(f"command -v {pm}"):
-                        pkg_mgr = pm
-                        break
-
-                arch_str   = _run("uname -m")
-                cpu_str    = _run(
-                    "nproc 2>/dev/null || "
-                    "grep -c '^processor' /proc/cpuinfo 2>/dev/null || echo ''"
-                )
-                ram_str    = _run(
-                    "awk '/MemTotal/{printf \"%d\", $2/1024}' /proc/meminfo 2>/dev/null || echo ''"
-                )
-                disk_str   = _run(
-                    "df / --output=size -B 1M 2>/dev/null | tail -1 | tr -d ' ' || echo ''"
-                )
-
-                os_update = dict(
-                    os_name         = detected_name or None,
-                    os_version      = detected_version or None,
-                    arch            = arch_str or None,
-                    package_manager = pkg_mgr or None,
-                    cpu_cores       = int(cpu_str) if cpu_str.isdigit() else None,
-                    ram_mb          = int(ram_str) if ram_str.isdigit() else None,
-                    disk_total_mb   = int(disk_str) if disk_str.isdigit() else None,
-                    last_seen_at    = dt.datetime.now(dt.timezone.utc),
-                )
-            except Exception:
-                # OS detection is best-effort; never block a successful test
-                pass
-
-            # Persist host key + OS info
-            service.update(
-                host_id=host.id,
-                actor_user_id=user.id,
-                host_key_fingerprint=server_key.fingerprint,
-                host_key_algorithm=server_key.algorithm,
-                **os_update,
-            )
-
-            return ConnectionTestResult(
-                ok=True,
-                reached=True,
-                authenticated=True,
-                host_key_fingerprint=server_key.fingerprint,
-                host_key_algorithm=server_key.algorithm,
-                latency_ms=latency,
-                message="Successfully connected and authenticated.\n" + (result.stdout or ""),
-                tested_at=tested_at,
-            )
-        else:
+        if result.exit_code != 0:
             return ConnectionTestResult(
                 ok=False,
                 reached=True,
@@ -344,14 +226,100 @@ def test_connection(
                 message=f"Connected but command failed with code {result.exit_code}: {result.stderr}",
                 tested_at=tested_at,
             )
+
+        # OS / resource probes (best-effort). Keep one SSH session open.
+        outputs: dict[str, str] = {}
+        for label, cmd in (
+            ("os_release", "cat /etc/os-release 2>/dev/null || cat /usr/lib/os-release 2>/dev/null || true"),
+            ("uname", "uname -m"),
+            ("free_m", "free -m"),
+            ("df_m", "df -m /"),
+            ("dpkg_q", "dpkg -l 2>/dev/null | head -n 5 || true"),
+            ("rpm_qa", "rpm -qa 2>/dev/null | head -n 5 || true"),
+            ("pacman_q", "pacman -Q 2>/dev/null | head -n 5 || true"),
+            ("nproc", "nproc 2>/dev/null || grep -c '^processor' /proc/cpuinfo 2>/dev/null || true"),
+        ):
+            try:
+                r = runner.run(cmd, timeout=10.0)
+                outputs[label] = r.stdout if r.exit_code == 0 else ""
+            except Exception:
+                outputs[label] = ""
+
+        info = detect_from_outputs(
+            os_release=outputs.get("os_release", ""),
+            uname=outputs.get("uname", ""),
+            free_m=outputs.get("free_m", ""),
+            df_m=outputs.get("df_m", ""),
+            dpkg_q=outputs.get("dpkg_q", ""),
+            rpm_qa=outputs.get("rpm_qa", ""),
+            pacman_q=outputs.get("pacman_q", ""),
+        )
+        nproc = (outputs.get("nproc") or "").strip()
+        cpu_cores = int(nproc) if nproc.isdigit() else None
+
+        # Prefer pretty name for UI when available.
+        pretty = ""
+        for line in (outputs.get("os_release") or "").splitlines():
+            if line.startswith("PRETTY_NAME="):
+                pretty = line.split("=", 1)[1].strip().strip('"')
+                break
+        os_name = pretty or info.os_name or None
+        os_family = info.os_family if info.os_family != "unknown" else None
+        os_version = info.os_version or None
+        package_manager = info.package_manager
+        arch = info.arch if info.arch != "unknown" else None
+        ram_mb = info.ram_total_mb
+        disk_total_mb = info.disk_total_mb
+        last_seen = dt.datetime.now(dt.timezone.utc)
+
+        service.update(
+            host_id=host.id,
+            actor_user_id=user.id,
+            host_key_fingerprint=server_key.fingerprint,
+            host_key_algorithm=server_key.algorithm,
+            os_family=os_family,
+            os_name=os_name,
+            os_version=os_version,
+            package_manager=package_manager,
+            arch=arch,
+            cpu_cores=cpu_cores,
+            ram_mb=ram_mb,
+            disk_total_mb=disk_total_mb,
+            last_seen_at=last_seen,
+        )
+
+        return ConnectionTestResult(
+            ok=True,
+            reached=True,
+            authenticated=True,
+            host_key_fingerprint=server_key.fingerprint,
+            host_key_algorithm=server_key.algorithm,
+            latency_ms=latency,
+            message=(
+                "Successfully connected and authenticated.\n"
+                f"OS: {os_name or 'unknown'} {os_version or ''} "
+                f"({os_family or '?'}) arch={arch} "
+                f"cpu={cpu_cores} ram_mb={ram_mb} disk_mb={disk_total_mb}"
+            ).strip(),
+            tested_at=tested_at,
+            os_family=os_family,
+            os_name=os_name,
+            os_version=os_version,
+            package_manager=package_manager,
+            arch=arch,
+            cpu_cores=cpu_cores,
+            ram_mb=ram_mb,
+            disk_total_mb=disk_total_mb,
+            last_seen_at=last_seen.isoformat(),
+        )
     except Exception as exc:
         latency = (time.time() - start_time) * 1000.0
         message = str(exc)
-        
-        # Determine error reason
-        reached = "authentication failed" not in message.lower() and "permission denied" not in message.lower()
+        reached = (
+            "authentication failed" not in message.lower()
+            and "permission denied" not in message.lower()
+        )
         authenticated = not reached
-
         fk_fp = None
         fk_alg = None
         try:
@@ -360,7 +328,6 @@ def test_connection(
             fk_alg = server_key.algorithm
         except Exception:
             pass
-
         return ConnectionTestResult(
             ok=False,
             reached=reached,
@@ -371,6 +338,11 @@ def test_connection(
             message=f"Connection failed: {message}",
             tested_at=tested_at,
         )
+    finally:
+        try:
+            runner.close()
+        except Exception:
+            pass
 
 
 __all__ = ["router"]

@@ -68,7 +68,7 @@ _COMMAND_RULES: list[tuple[re.Pattern[str], RiskLevel]] = [
     (re.compile(r"\b(systemctl\s+(disable|stop|masks?)\s+ssh)"), RiskLevel.CRITICAL),
     (re.compile(r"\bchmod\s+-R\s+0+\s+/"), RiskLevel.CRITICAL),
     # HIGH
-    (re.compile(r"\b(systemctl\s+(restart|reload))\b"), RiskLevel.MEDIUM),
+    (re.compile(r"\b(systemctl\s+(restart|reload))\b"), RiskLevel.HIGH),
     (re.compile(r"\b(reboot|poweroff|halt|shutdown)\b"), RiskLevel.HIGH),
     (re.compile(r"\b(passwd|chpasswd)\b"), RiskLevel.HIGH),
     (re.compile(r"\b(useradd|userdel|usermod|groupadd|groupdel)\b"), RiskLevel.HIGH),

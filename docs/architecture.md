@@ -37,38 +37,56 @@ agent, no Python, no Node, no DB on the target.**
                         +-----------------------+
 ```
 
-## Components (current and planned)
+## Components (current)
 
-| Layer | Component | Status | Milestone |
-|---|---|---|---|
-| API | FastAPI app with `/api/health` | **shipped** | M0 |
-| Config | Strict settings + production safety net | **shipped** | M0 |
-| DB | SQLAlchemy 2 models + Alembic | next | M0 / T2 |
-| Crypto | AES-256-GCM credential vault | next | M0 / T3 |
-| Redaction | Secret-pattern scrubbing | next | M0 / T4 |
-| Auth | Argon2id sessions, login/logout | next | M1 |
-| Audit | Append-only audit log | next | M1 |
-| Hosts | CRUD + fingerprint trust | next | M2 |
-| SSH runner | AsyncSSH runner with strict host keys | next | M2 |
-| Job queue | SQLite/local queue + worker | next | M3 |
-| Policy | Risk classification + approval | next | M3 |
-| Recipes | YAML schema + engine | next | M4 |
-| Dashboard | Vite React SPA (static build) | next | M5 |
-| CLI | `vmanctl` (Typer) | next | M6 |
-| MCP | `vman-mcp` constrained tools | next | M8 |
-| Built-in recipes | healthcheck, install-9router, etc. | next | M9 |
-| Deployment | systemd units, Cloudflare Tunnel docs | next | M10 |
+| Layer | Component | Status |
+|---|---|---|
+| API | FastAPI app with `/api/health` + routers | **shipped** |
+| Config | Strict settings + production safety net | **shipped** |
+| DB | SQLAlchemy 2 models + Alembic | **shipped** |
+| Crypto | AES-256-GCM credential vault | **shipped** |
+| Redaction | Secret-pattern scrubbing | **shipped** |
+| Auth | Argon2id sessions, login/logout, CSRF | **shipped** |
+| Audit | Append-only audit log + hash chain | **shipped** |
+| Hosts | CRUD + fingerprint trust + connection test | **shipped** |
+| SSH runner | Paramiko transport, strict host keys | **shipped** |
+| Job queue | SQLite/local queue + in-process worker | **shipped** |
+| Policy | Risk classification + approval | **shipped** |
+| Recipes | YAML schema + engine + builtin pack | **shipped** |
+| Dashboard | Vite React SPA (static build) | **shipped** |
+| CLI | `vmanctl` (Typer) | **shipped** |
+| MCP | `vman-mcp` constrained tools | **shipped** |
+| Terminal | WebSocket SSH shell | **shipped** |
+| Agent bridge | Setup wizard / auto-detection | **shipped** |
+| Deployment | systemd units, Cloudflare Tunnel docs | **shipped** |
 
 ## Process and security boundaries
 
-- **API process** serves HTTP, holds no decrypted credentials longer than a
-  single request. Sessions are cookie-based and signed with `VMAN_SESSION_SECRET`.
-- **Worker process** is the only thing allowed to decrypt credentials. It runs
-  as a separate systemd unit so it can be paused independently in an emergency.
+- **API process** serves HTTP. Session cookies signed with `VMAN_SESSION_SECRET`.
+- **Worker process** (`vman-worker` / in-process `JobWorker`) decrypts vault
+  credentials and opens SSH. Prefer this path for remote execution.
+- **Connection test + terminal** also decrypt credentials in the API process
+  today (MVP compromise for interactive UX). Treat those routes as trusted
+  operator-only surfaces.
 - **Database** lives on the central VPS only. SQLite for MVP; PostgreSQL-ready
   abstraction later.
 - **Vault keys** never touch the database. `VMAN_MASTER_KEY` is loaded from
   the environment (env file, not committed).
+
+## SSH credential mapping
+
+Host has one primary `credential_id`. Mapping:
+
+| Credential kind | Result |
+|---|---|
+| `ssh_password` | SSH password |
+| `ssh_private_key` | Private key PEM; optional `metadata.passphrase` or linked `metadata.passphrase_credential_id` |
+| `ssh_private_key_passphrase` | Passphrase only; optional bundled PEM in `metadata.private_key` |
+
+For `auth_method=key_with_passphrase`: store the key as primary credential with
+`metadata_json.passphrase_credential_id` pointing at a passphrase vault entry.
+
+Hosts without `credential_id` fall back to local `SubprocessTransport` (dev/tests only).
 
 ## Threat model summary
 
@@ -76,11 +94,12 @@ The full threat model is in section 2 of the implementation plan. The
 non-negotiables for every component:
 
 1. No plaintext credentials in the DB, logs, API responses, or the dashboard.
-2. No `print()` of secrets anywhere -- the redaction engine (M0/T4) catches
+2. No `print()` of secrets anywhere -- the redaction engine catches
    the obvious patterns in logs and tool outputs.
 3. Every sensitive action creates an audit event.
-4. Destructive actions are gated by the policy engine (M3/T12).
-5. Host key fingerprints must be verified before any SSH command runs.
+4. Destructive actions are gated by the policy engine.
+5. Host key fingerprints must be verified before any SSH command runs
+   (after first trust).
 6. Production deploys MUST refuse to boot with placeholder secrets (see
    `Settings.model_post_init`).
 
@@ -111,4 +130,3 @@ tree) happens in GitHub Actions instead.
 - `docs/recipes.md` -- recipe DSL and the recipe library
 - `docs/deployment.md` -- systemd, Cloudflare Tunnel, backups
 - `docs/mcp-integration.md` -- exposing VMAN to Alice/Hermes
-- `docs/vibe-coding-runbook.md` -- how to keep iterating from the small VPS

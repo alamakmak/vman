@@ -11,6 +11,8 @@ class SetupRequest(BaseModel):
     username: str = Field(..., min_length=1, max_length=64)
     password: str = Field(..., min_length=12, max_length=1024)
     email: str | None = Field(default=None, max_length=254)
+    # Optional; required when VMAN_SETUP_TOKEN is configured.
+    setup_token: str | None = Field(default=None, max_length=256)
 
     @field_validator("username")
     @classmethod
@@ -30,6 +32,20 @@ class LoginRequest(BaseModel):
 
     username: str = Field(..., min_length=1, max_length=64)
     password: str = Field(..., min_length=1, max_length=1024)
+
+
+class AuthStatusOut(BaseModel):
+    """Public bootstrap status (no secrets, no usernames)."""
+
+    setup_required: bool
+    setup_token_required: bool
+
+
+class ChangePasswordRequest(BaseModel):
+    """Authenticated password change."""
+
+    current_password: str = Field(..., min_length=1, max_length=1024)
+    new_password: str = Field(..., min_length=12, max_length=1024)
 
 
 class UserOut(BaseModel):
@@ -54,6 +70,8 @@ class SessionOut(BaseModel):
 
 
 __all__ = [
+    "AuthStatusOut",
+    "ChangePasswordRequest",
     "LoginRequest",
     "SessionOut",
     "SetupRequest",
